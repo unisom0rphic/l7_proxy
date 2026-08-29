@@ -1,0 +1,35 @@
+services:
+  users-prod:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: "3001"
+      SERVICE_NAME: "users_prod"
+      LATENCY_MS: 20
+      ERROR_RATE: 0
+
+  users-test:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3002:3002"
+    environment:
+      PORT: "3002"
+      SERVICE_NAME: "users_test"
+      LATENCY_MS: 20
+      ERROR_RATE: 0.15
+
+  orders:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3003:3003"
+    environment:
+      PORT: "3003"
+      SERVICE_NAME: "orders"
+      LATENCY_MS: 30
