@@ -1,0 +1,20 @@
+upstreams:
+  - name: users-prod
+    url: http://users-prod:3001
+    timeout_ms: 2000 
+  - name: users-test
+    url: http://users-test:3002
+    timeout_ms: 2000 
+
+routes:
+  - match:
+      path_prefix: /api/users
+    upstream: users-prod
+    mirror:
+      upstream: users-test
+      ratio: 0.2
+
+  - match:
+      path_prefix: /api/orders
+      method: GET
+    upstream: orders
