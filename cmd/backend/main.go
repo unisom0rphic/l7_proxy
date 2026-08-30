@@ -25,8 +25,7 @@ func main() {
 
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		isError := rand.Float64() < errorRate
-		requestLatency := int(rand.Float64() * float64(configLatency))
-		time.Sleep(time.Duration(requestLatency) * time.Millisecond)
+		time.Sleep(time.Duration(configLatency) * time.Millisecond)
 
 		if isError {
 			w.Header().Set("Content-Type", "text/plain")
@@ -42,6 +41,16 @@ func main() {
 
 	http.HandleFunc("/api", handler)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	http.HandleFunc("/hang", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(60 * time.Second)
+	})
+	http.HandleFunc("/hang-body", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("part"))
+		w.(http.Flusher).Flush()
+		time.Sleep(60 * time.Second)
+	})
 
 	log.Printf("Server listening on %s\n", port)
 	if err := http.ListenAndServe(":"+port, http.DefaultServeMux); err != nil {
