@@ -53,16 +53,16 @@ func main() {
 
 	log.Printf("CONFIG: %v\n", config)
 
-	// TODO: make it work with multiple backends (3001/3002/3003)
+	// TODO: multiple backends (3001/3002/3003)
+	// TODO: error handling (in proxy.ErrorHandler, map context timeout to 504, other to 502)
 	// TODO: route policy
-	// TODO: headers
 	// TODO: hot reload
-	// TODO: timeout if backend hangs
 	backendURL, err := url.Parse(config.Upstreams[0].Url)
 	if err != nil {
 		log.Fatalf("Error parsing the url: %v\n", err)
 	}
 
+	// FIXME: timeout values should be read from config
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			// Setting headers to prevent spoofing
@@ -88,18 +88,28 @@ func main() {
 			log.Printf("Method: %v | StatusCode: %v | Path: %v\n", method, status, path)
 			return nil
 		},
+
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 10 * time.Second,
+			IdleConnTimeout:       120 * time.Second,
+		},
 	}
 
 	server := &http.Server{
 		Addr: ":8080",
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			proxy.ServeHTTP(w, r)
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer cancel()
+			proxy.ServeHTTP(w, r.WithContext(ctx))
 		}),
+		ReadHeaderTimeout: 15 * time.Second,
+		IdleTimeout:       15 * time.Second,
 	}
-
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		proxy.ServeHTTP(w, r)
-	})
 
 	go func() {
 		log.Println("Proxy running at :8080")
