@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -57,18 +58,36 @@ func main() {
 	// TODO: headers
 	// TODO: hot reload
 	// TODO: timeout if backend hangs
-	backendURL, err := url.Parse("http://localhost:3000")
+	backendURL, err := url.Parse(config.Upstreams[0].Url)
 	if err != nil {
 		log.Fatalf("Error parsing the url: %v\n", err)
 	}
 
-	proxy := httputil.NewSingleHostReverseProxy(backendURL)
-	proxy.ModifyResponse = func(resp *http.Response) error {
-		method := resp.Request.Method
-		status := resp.StatusCode
-		path := resp.Request.URL.Path
-		log.Printf("Method: %v | StatusCode: %v | Path: %v\n", method, status, path)
-		return nil
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) {
+			// Setting headers to prevent spoofing
+			// do RESEARCH on that
+			r.Out.Header.Del("X-Forwarded-For")
+			clientIP, _, _ := net.SplitHostPort(r.In.RemoteAddr)
+			r.Out.Header.Set("X-Forwarded-For", clientIP)
+
+			if r.In.TLS != nil {
+				r.Out.Header.Set("X-Forwarded-Proto", "https")
+			} else {
+				r.Out.Header.Set("X-Forwarded-Proto", "http")
+			}
+
+			r.SetURL(backendURL)
+			r.Out.Host = backendURL.Host
+		},
+
+		ModifyResponse: func(resp *http.Response) error {
+			method := resp.Request.Method
+			status := resp.StatusCode
+			path := resp.Request.URL.Path
+			log.Printf("Method: %v | StatusCode: %v | Path: %v\n", method, status, path)
+			return nil
+		},
 	}
 
 	server := &http.Server{

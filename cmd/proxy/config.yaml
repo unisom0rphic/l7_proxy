@@ -1,4 +1,7 @@
 upstreams:
+  - name: test
+    url: http://localhost:3000
+    timeout_ms: 2000
   - name: users-prod
     url: http://users-prod:3001
     timeout_ms: 2000 
