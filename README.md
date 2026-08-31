@@ -16,5 +16,5 @@ docker run \
     --network backend_default \
     -t proxy
 # Ensure everything works
-curl localhost:8080/users/api
+curl localhost:8080/api/users
 ```

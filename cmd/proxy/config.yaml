@@ -13,13 +13,13 @@ net_timeouts_s:
 
 upstreams:
   - name: users-prod
-    host: users-prod:3001
+    host: http://users-prod:3001
     timeout_ms: 2000 
   - name: users-test
-    host: users-test:3002
+    host: http://users-test:3002
     timeout_ms: 2000 
   - name: orders
-    host: orders:3003
+    host: http://orders:3003
     timeout_ms: 2000 
 
 routes:

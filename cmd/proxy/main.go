@@ -77,10 +77,12 @@ func decideRoute(path string, config *Config) (*url.URL, error) {
 
 			log.Printf("HOST: %v, path: %v\n", host, path)
 
-			return &url.URL{
-				Host: host,
-				Path: "/api", // should be something else
-			}, nil
+			url, err := url.Parse(host)
+			if err != nil {
+				log.Printf("[decidePath]: Error parsing host url from config: %v\n", err)
+			}
+			url.Path = "/api"
+			return url, nil
 		}
 	}
 
@@ -141,12 +143,11 @@ func main() {
 			}
 
 			if r.In.TLS != nil {
+				// FIXME: might use ProxyRequest pr.SetXForwarded()
+				// need research
 				r.Out.Header.Set("X-Forwarded-Proto", "https")
-				route.Scheme = "https"
-
 			} else {
 				r.Out.Header.Set("X-Forwarded-Proto", "http")
-				route.Scheme = "http"
 			}
 
 			log.Printf("Route: %v\n", route)
@@ -201,6 +202,8 @@ func main() {
 	server := &http.Server{
 		Addr: ":8080",
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// FIXME: context timeout depends on server timeout
+			// (user can define how long to wait for the response body)
 			ctx, cancel := context.WithTimeout(r.Context(), toSec(timeoutsServer.Context))
 			defer cancel()
 			proxy.ServeHTTP(w, r.WithContext(ctx))
