@@ -35,14 +35,14 @@ type Config struct {
 
 	Upstreams []struct {
 		Name    string `yaml:"name"`
-		Host    string `yaml:"url"`
+		Host    string `yaml:"host"`
 		Timeout int    `yaml:"timeout_ms"`
 	} `yaml:"upstreams"`
 
 	Routes []struct {
 		Rules struct {
 			PathPrefix string `yaml:"path_prefix"`
-		} `yaml:"match"`
+		} `yaml:"rules"`
 		Upstream string `yaml:"upstream"`
 		Mirror   struct {
 			Upstream string  `yaml:"upstream"`
@@ -132,7 +132,7 @@ func main() {
 			r.Out.Header.Set("X-Forwarded-For", clientIP)
 
 			route, err := decideRoute(r.In.URL.Path, &config)
-			log.Printf("Route: %v\n", route)
+
 			if err != nil {
 				// TODO:
 				// route not found so we should return something
@@ -148,6 +148,8 @@ func main() {
 				r.Out.Header.Set("X-Forwarded-Proto", "http")
 				route.Scheme = "http"
 			}
+
+			log.Printf("Route: %v\n", route)
 
 			// FIXME:
 			// if page not found returns 502  because route="" it's incorrect
