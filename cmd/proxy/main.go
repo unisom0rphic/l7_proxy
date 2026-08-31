@@ -17,6 +17,22 @@ import (
 )
 
 type Config struct {
+	NetworkTimeoutsSec struct {
+		Transport struct {
+			TCP            int `yaml:"tcp"`
+			KeepAlive      int `yaml:"keep_alive"`
+			TLS            int `yaml:"tls"`
+			ResponseHeader int `yaml:"response_header"`
+			IdleConn       int `yaml:"idle_conn"`
+		} `yaml:"transport"`
+
+		Server struct {
+			Context    int `yaml:"context"`
+			ReadHeader int `yaml:"read_header"`
+			Idle       int `yaml:"idle"`
+		} `yaml:"server"`
+	} `yaml:"network_timeouts_s"`
+
 	Upstreams []struct {
 		Name    string `yaml:"name"`
 		Url     string `yaml:"url"`
@@ -54,7 +70,6 @@ func main() {
 	log.Printf("CONFIG: %v\n", config)
 
 	// TODO: multiple backends (3001/3002/3003)
-	// TODO: error handling (in proxy.ErrorHandler, map context timeout to 504, other to 502)
 	// TODO: route policy
 	// TODO: hot reload
 	backendURL, err := url.Parse(config.Upstreams[0].Url)
@@ -62,13 +77,19 @@ func main() {
 		log.Fatalf("Error parsing the url: %v\n", err)
 	}
 
-	// FIXME: timeout values should be read from config
+	toSec := func(d int) time.Duration { return time.Duration(d) * time.Second }
+	timeoutsTransport := config.NetworkTimeoutsSec.Transport
+	timeoutsServer := config.NetworkTimeoutsSec.Server
+
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			// Setting headers to prevent spoofing
 			// do RESEARCH on that
 			r.Out.Header.Del("X-Forwarded-For")
-			clientIP, _, _ := net.SplitHostPort(r.In.RemoteAddr)
+			clientIP, _, err := net.SplitHostPort(r.In.RemoteAddr)
+			if err != nil {
+				log.Fatalf("Failed splitting client IP during Rewrite: %v\n", err)
+			}
 			r.Out.Header.Set("X-Forwarded-For", clientIP)
 
 			if r.In.TLS != nil {
@@ -81,6 +102,26 @@ func main() {
 			r.Out.Host = backendURL.Host
 		},
 
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			log.Printf("HTTP error on %s %s: %v\n", r.Method, r.URL.Path, err)
+			if errors.Is(err, context.DeadlineExceeded) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusGatewayTimeout)
+				_, err = w.Write([]byte(`{"error": "Requested timed out on the server"}`))
+				if err != nil {
+					log.Fatalf("[ErrorHandler]: failed to write response: %v\n", err)
+				}
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_, err = w.Write([]byte(`{"error": "An unexpected error occurred"}`))
+			if err != nil {
+				log.Fatalf("[ErrorHandler]: failed to write response: %v\n", err)
+			}
+		},
+
 		ModifyResponse: func(resp *http.Response) error {
 			method := resp.Request.Method
 			status := resp.StatusCode
@@ -91,24 +132,24 @@ func main() {
 
 		Transport: &http.Transport{
 			DialContext: (&net.Dialer{
-				Timeout:   10 * time.Second,
-				KeepAlive: 30 * time.Second,
+				Timeout:   toSec(timeoutsTransport.TCP),
+				KeepAlive: toSec(timeoutsTransport.KeepAlive),
 			}).DialContext,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
-			IdleConnTimeout:       120 * time.Second,
+			TLSHandshakeTimeout:   toSec(timeoutsTransport.TLS),
+			ResponseHeaderTimeout: toSec(timeoutsTransport.ResponseHeader),
+			IdleConnTimeout:       toSec(timeoutsTransport.IdleConn),
 		},
 	}
 
 	server := &http.Server{
 		Addr: ":8080",
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(r.Context(), toSec(timeoutsServer.Context))
 			defer cancel()
 			proxy.ServeHTTP(w, r.WithContext(ctx))
 		}),
-		ReadHeaderTimeout: 15 * time.Second,
-		IdleTimeout:       15 * time.Second,
+		ReadHeaderTimeout: toSec(timeoutsServer.ReadHeader),
+		IdleTimeout:       toSec(timeoutsServer.Idle),
 	}
 
 	go func() {

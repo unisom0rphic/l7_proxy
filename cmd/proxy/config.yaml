@@ -1,3 +1,16 @@
+net_timeouts_s:
+  transport:
+    tcp: 10
+    keep_alive: 30
+    tls: 10
+    response_header: 10
+    idle_conn: 120
+  server:
+    context: 5
+    read_header: 15
+    idle: 15
+  
+
 upstreams:
   - name: test
     url: http://localhost:3000
