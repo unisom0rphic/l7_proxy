@@ -12,25 +12,25 @@ net_timeouts_s:
   
 
 upstreams:
-  - name: test
-    url: http://localhost:3000
-    timeout_ms: 2000
   - name: users-prod
-    url: http://users-prod:3001
+    host: localhost:3001
     timeout_ms: 2000 
   - name: users-test
-    url: http://users-test:3002
+    host: localhost:3002
+    timeout_ms: 2000 
+  - name: orders
+    host: localhost:3003
     timeout_ms: 2000 
 
 routes:
-  - match:
+  - rules:
       path_prefix: /api/users
     upstream: users-prod
     mirror:
       upstream: users-test
       ratio: 0.2
 
-  - match:
+  - rules:
       path_prefix: /api/orders
       method: GET
     upstream: orders

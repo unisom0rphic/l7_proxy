@@ -31,16 +31,16 @@ type Config struct {
 			ReadHeader int `yaml:"read_header"`
 			Idle       int `yaml:"idle"`
 		} `yaml:"server"`
-	} `yaml:"network_timeouts_s"`
+	} `yaml:"net_timeouts_s"`
 
 	Upstreams []struct {
 		Name    string `yaml:"name"`
-		Url     string `yaml:"url"`
+		Host    string `yaml:"url"`
 		Timeout int    `yaml:"timeout_ms"`
 	} `yaml:"upstreams"`
 
 	Routes []struct {
-		Match struct {
+		Rules struct {
 			PathPrefix string `yaml:"path_prefix"`
 		} `yaml:"match"`
 		Upstream string `yaml:"upstream"`
@@ -50,6 +50,42 @@ type Config struct {
 		} `yaml:"mirror"`
 	} `yaml:"routes"`
 }
+
+func findHostByName(name string, config *Config) (string, error) {
+	for _, upstream := range config.Upstreams {
+		if upstream.Name == name {
+			return upstream.Host, nil
+		}
+	}
+
+	return "", errors.New("Host not found")
+}
+
+// Don't change signature
+func decideRoute(path string, config *Config) (*url.URL, error) {
+	log.Printf("[decideRoute]: Received input: %v\n", path)
+	for _, route := range config.Routes {
+		routePath := route.Rules.PathPrefix
+		if routePath == path {
+			name := route.Upstream
+			host, err := findHostByName(name, config)
+
+			if err != nil {
+				log.Printf("[decidePath]: %v\n", err)
+				return nil, errors.New("Path not found")
+			}
+
+			log.Printf("HOST: %v, path: %v\n", host, path)
+
+			return &url.URL{
+				Host: host,
+				Path: "/api", // should be something else
+			}, nil
+		}
+	}
+
+	return nil, errors.New("Path not found")
+} // test this function
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -69,12 +105,15 @@ func main() {
 
 	log.Printf("CONFIG: %v\n", config)
 
-	// TODO: multiple backends (3001/3002/3003)
 	// TODO: route policy
 	// TODO: hot reload
-	backendURL, err := url.Parse(config.Upstreams[0].Url)
-	if err != nil {
-		log.Fatalf("Error parsing the url: %v\n", err)
+	backendURLs := make([]*url.URL, 0)
+	for _, upstream := range config.Upstreams {
+		backendURL, err := url.Parse(upstream.Host)
+		if err != nil {
+			log.Fatalf("Error parsing the url: %v\n", err)
+		}
+		backendURLs = append(backendURLs, backendURL)
 	}
 
 	toSec := func(d int) time.Duration { return time.Duration(d) * time.Second }
@@ -92,14 +131,30 @@ func main() {
 			}
 			r.Out.Header.Set("X-Forwarded-For", clientIP)
 
-			if r.In.TLS != nil {
-				r.Out.Header.Set("X-Forwarded-Proto", "https")
-			} else {
-				r.Out.Header.Set("X-Forwarded-Proto", "http")
+			route, err := decideRoute(r.In.URL.Path, &config)
+			log.Printf("Route: %v\n", route)
+			if err != nil {
+				// TODO:
+				// route not found so we should return something
+				// like 400
+				return
 			}
 
-			r.SetURL(backendURL)
-			r.Out.Host = backendURL.Host
+			if r.In.TLS != nil {
+				r.Out.Header.Set("X-Forwarded-Proto", "https")
+				route.Scheme = "https"
+
+			} else {
+				r.Out.Header.Set("X-Forwarded-Proto", "http")
+				route.Scheme = "http"
+			}
+
+			// FIXME:
+			// if page not found returns 502  because route="" it's incorrect
+			// also rewrite should return but the `function return` and `proxy response`
+			// are independent -> fix (return and send headers). Look at err != nil block
+			r.Out.URL = route
+			r.Out.Host = route.Host
 		},
 
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -107,7 +162,7 @@ func main() {
 			if errors.Is(err, context.DeadlineExceeded) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusGatewayTimeout)
-				_, err = w.Write([]byte(`{"error": "Requested timed out on the server"}`))
+				_, err = w.Write([]byte(`{"error": "Request timed out on the server"}`))
 				if err != nil {
 					log.Fatalf("[ErrorHandler]: failed to write response: %v\n", err)
 				}
