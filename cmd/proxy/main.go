@@ -16,6 +16,7 @@ import (
 	"go.yaml.in/yaml/v4"
 )
 
+// used in 2 places already
 func getenv(key string, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -24,41 +25,53 @@ func getenv(key string, def string) string {
 	return def
 }
 
-type Config struct {
-	NetworkTimeoutsSec struct {
-		Transport struct {
-			TCP            int `yaml:"tcp"`
-			KeepAlive      int `yaml:"keep_alive"`
-			TLS            int `yaml:"tls"`
-			ResponseHeader int `yaml:"response_header"`
-			IdleConn       int `yaml:"idle_conn"`
-		} `yaml:"transport"`
-
-		Server struct {
-			Context    int `yaml:"context"`
-			ReadHeader int `yaml:"read_header"`
-			Idle       int `yaml:"idle"`
-		} `yaml:"server"`
-	} `yaml:"net_timeouts_s"`
-
-	Upstreams []struct {
-		Name    string `yaml:"name"`
-		Host    string `yaml:"host"`
-		Timeout int    `yaml:"timeout_ms"`
-	} `yaml:"upstreams"`
-
-	Routes []struct {
-		Rules struct {
-			PathPrefix string `yaml:"path_prefix"`
-		} `yaml:"rules"`
-		Upstream string `yaml:"upstream"`
-		Mirror   struct {
-			Upstream string  `yaml:"upstream"`
-			Ratio    float64 `yaml:"ratio"`
-		} `yaml:"mirror"`
-	} `yaml:"routes"`
+type TransportTimeoutes struct {
+	TCP            int `yaml:"tcp"`
+	KeepAlive      int `yaml:"keep_alive"`
+	TLS            int `yaml:"tls"`
+	ResponseHeader int `yaml:"response_header"`
+	IdleConn       int `yaml:"idle_conn"`
 }
 
+type ServerTimeoutes struct {
+	Context    int `yaml:"context"`
+	ReadHeader int `yaml:"read_header"`
+	Idle       int `yaml:"idle"`
+}
+
+type Upstream struct {
+	Name    string `yaml:"name"`
+	Host    string `yaml:"host"`
+	Timeout int    `yaml:"timeout_ms"`
+}
+
+// how to handle multiple rules?
+type Policy struct {
+	PathPrefix string `yaml:"path_prefix"`
+	Header     string `yaml:"header"`
+	Path       string `yaml:"path"`
+	// etc
+}
+
+type Route struct {
+	Rules    Policy `yaml:"rules"`
+	Upstream string `yaml:"upstream"`
+	Mirror   struct {
+		Upstream string  `yaml:"upstream"`
+		Ratio    float64 `yaml:"ratio"`
+	} `yaml:"mirror"`
+}
+
+type Config struct {
+	NetworkTimeoutsSec struct {
+		Transport TransportTimeoutes `yaml:"transport"`
+		Server    ServerTimeoutes    `yaml:"server"`
+	} `yaml:"net_timeouts_s"`
+	Upstreams []Upstream `yaml:"upstreams"`
+	Routes    []Route    `yaml:"routes"`
+}
+
+// Finds host URL via linear search
 func (config *Config) findHostByName(name string) (string, error) {
 	for _, upstream := range config.Upstreams {
 		if upstream.Name == name {
@@ -69,8 +82,11 @@ func (config *Config) findHostByName(name string) (string, error) {
 	return "", errors.New("Host not found")
 }
 
-// Don't change signature
+// Decides which API route to use given a path
+//
+// # Don't change signature
 func (config *Config) decideRoute(path string) (*url.URL, error) {
+	// TODO: obviously add support for other rules
 	log.Printf("[decideRoute]: Received input: %v\n", path)
 	for _, route := range config.Routes {
 		routePath := route.Rules.PathPrefix
@@ -135,10 +151,11 @@ func main() {
 			route, err := config.decideRoute(r.In.URL.Path)
 
 			if err != nil {
-				ctx := context.WithValue(r.Out.Context(), "proxyError", http.StatusBadRequest)
+				ctx := context.WithValue(r.Out.Context(), "proxyError", http.StatusNotFound)
 				r.Out = r.Out.WithContext(ctx)
 				// FIXME: ErrorHandler is triggered because scheme is ""
-				// because the route wasn't found, not after entering this bloc
+				// because the route wasn't found, not after entering this block
+				// it's correct but DOESN'T LET ME SLEEP
 				return
 			}
 
@@ -154,7 +171,10 @@ func main() {
 			e := r.Context().Value("proxyError")
 
 			if e == http.StatusBadRequest {
-				http.Error(w, "Bad request: invalid route", http.StatusBadRequest)
+				http.Error(w, "Bad request: ", http.StatusBadRequest)
+				return
+			} else if e == http.StatusNotFound {
+				http.NotFound(w, r)
 				return
 			} else if errors.Is(err, context.DeadlineExceeded) {
 				http.Error(w, "Request timed out on the server", http.StatusGatewayTimeout)
