@@ -16,6 +16,14 @@ import (
 	"go.yaml.in/yaml/v4"
 )
 
+func getenv(key string, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+
+	return def
+}
+
 type Config struct {
 	NetworkTimeoutsSec struct {
 		Transport struct {
@@ -51,7 +59,7 @@ type Config struct {
 	} `yaml:"routes"`
 }
 
-func findHostByName(name string, config *Config) (string, error) {
+func (config *Config) findHostByName(name string) (string, error) {
 	for _, upstream := range config.Upstreams {
 		if upstream.Name == name {
 			return upstream.Host, nil
@@ -62,13 +70,13 @@ func findHostByName(name string, config *Config) (string, error) {
 }
 
 // Don't change signature
-func decideRoute(path string, config *Config) (*url.URL, error) {
+func (config *Config) decideRoute(path string) (*url.URL, error) {
 	log.Printf("[decideRoute]: Received input: %v\n", path)
 	for _, route := range config.Routes {
 		routePath := route.Rules.PathPrefix
 		if routePath == path {
 			name := route.Upstream
-			host, err := findHostByName(name, config)
+			host, err := config.findHostByName(name)
 
 			if err != nil {
 				log.Printf("[decidePath]: %v\n", err)
@@ -124,59 +132,36 @@ func main() {
 
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
-			// Setting headers to prevent spoofing
-			// do RESEARCH on that
-			r.Out.Header.Del("X-Forwarded-For")
-			clientIP, _, err := net.SplitHostPort(r.In.RemoteAddr)
-			if err != nil {
-				log.Fatalf("Failed splitting client IP during Rewrite: %v\n", err)
-			}
-			r.Out.Header.Set("X-Forwarded-For", clientIP)
-
-			route, err := decideRoute(r.In.URL.Path, &config)
+			route, err := config.decideRoute(r.In.URL.Path)
 
 			if err != nil {
-				// TODO:
-				// route not found so we should return something
-				// like 400
+				ctx := context.WithValue(r.Out.Context(), "proxyError", http.StatusBadRequest)
+				r.Out = r.Out.WithContext(ctx)
+				// FIXME: ErrorHandler is triggered because scheme is ""
+				// because the route wasn't found, not after entering this bloc
 				return
-			}
-
-			if r.In.TLS != nil {
-				// FIXME: might use ProxyRequest pr.SetXForwarded()
-				// need research
-				r.Out.Header.Set("X-Forwarded-Proto", "https")
-			} else {
-				r.Out.Header.Set("X-Forwarded-Proto", "http")
 			}
 
 			log.Printf("Route: %v\n", route)
 
-			// FIXME:
-			// if page not found returns 502  because route="" it's incorrect
-			// also rewrite should return but the `function return` and `proxy response`
-			// are independent -> fix (return and send headers). Look at err != nil block
+			r.SetXForwarded()
 			r.Out.URL = route
 			r.Out.Host = route.Host
 		},
 
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("HTTP error on %s %s: %v\n", r.Method, r.URL.Path, err)
-			if errors.Is(err, context.DeadlineExceeded) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusGatewayTimeout)
-				_, err = w.Write([]byte(`{"error": "Request timed out on the server"}`))
-				if err != nil {
-					log.Fatalf("[ErrorHandler]: failed to write response: %v\n", err)
-				}
-				return
-			}
+			e := r.Context().Value("proxyError")
 
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadGateway)
-			_, err = w.Write([]byte(`{"error": "An unexpected error occurred"}`))
-			if err != nil {
-				log.Fatalf("[ErrorHandler]: failed to write response: %v\n", err)
+			if e == http.StatusBadRequest {
+				http.Error(w, "Bad request: invalid route", http.StatusBadRequest)
+				return
+			} else if errors.Is(err, context.DeadlineExceeded) {
+				http.Error(w, "Request timed out on the server", http.StatusGatewayTimeout)
+				return
+			} else {
+				http.Error(w, "Bad Gateway: unexpected error", http.StatusBadGateway)
+				return
 			}
 		},
 
@@ -199,8 +184,10 @@ func main() {
 		},
 	}
 
+	port := getenv("PORT", "8080")
+
 	server := &http.Server{
-		Addr: ":8080",
+		Addr: ":" + port,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// FIXME: context timeout depends on server timeout
 			// (user can define how long to wait for the response body)
@@ -213,7 +200,7 @@ func main() {
 	}
 
 	go func() {
-		log.Println("Proxy running at :8080")
+		log.Println("Proxy running at ", port)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("Server error: %v\n", err)
 		}

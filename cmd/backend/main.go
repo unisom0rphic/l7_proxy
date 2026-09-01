@@ -27,6 +27,8 @@ func main() {
 		isError := rand.Float64() < errorRate
 		time.Sleep(time.Duration(configLatency) * time.Millisecond)
 
+		log.Printf("%s: received headers: %v\n", serviceName, r.Header)
+
 		if isError {
 			w.Header().Set("Content-Type", "text/plain")
 			w.WriteHeader(http.StatusInternalServerError)
