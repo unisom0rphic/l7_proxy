@@ -24,13 +24,14 @@ upstreams:
 
 routes:
   - rules:
-      path_prefix: /api/users
+      path: /api/users
+      path_prefix: /users
     upstream: users-prod
     mirror:
       upstream: users-test
       ratio: 0.2
 
   - rules:
-      path_prefix: /api/orders
+      path: /api/orders
       method: GET
     upstream: orders
