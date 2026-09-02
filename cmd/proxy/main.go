@@ -82,6 +82,7 @@ func (config *Config) decideRoute(path string) (*url.URL, error) {
 	log.Printf("[decideRoute]: Received input: %v\n", path)
 
 	// Mapping services` names to hosts` URLs
+	// FIXME: Should be made only once on config init
 	urls := make(map[string]*url.URL)
 	for _, upstream := range config.Upstreams {
 		name := upstream.Name
@@ -99,15 +100,20 @@ func (config *Config) decideRoute(path string) (*url.URL, error) {
 		routePath := route.Rule.Path
 		if routePath == path {
 			name := route.Upstream
-			url, ok := urls[name]
+			host, ok := urls[name]
 
 			if !ok {
 				log.Println("[decidePath]: Route not found")
 				return nil, errors.New("Route not found")
 			}
 
-			url.Path = "/api"
-			return url, nil
+			// TODO: maybe create a method to create a url given
+			// host and path?
+			return &url.URL{
+				Scheme: host.Scheme,
+				Host:   host.Host,
+				Path:   "/api",
+			}, nil
 		}
 	}
 
