@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -45,8 +46,7 @@ type Upstream struct {
 	Timeout int    `yaml:"timeout_ms"`
 }
 
-// how to handle multiple rules?
-type Policy struct {
+type Rule struct {
 	PathPrefix string `yaml:"path_prefix"`
 	Header     string `yaml:"header"`
 	Path       string `yaml:"path"`
@@ -54,7 +54,7 @@ type Policy struct {
 }
 
 type Route struct {
-	Rules    Policy `yaml:"rules"`
+	Rule     Rule   `yaml:"rules"`
 	Upstream string `yaml:"upstream"`
 	Mirror   struct {
 		Upstream string  `yaml:"upstream"`
@@ -62,6 +62,8 @@ type Route struct {
 	} `yaml:"mirror"`
 }
 
+// Need a function to parse yaml
+// will be useful for runtime atomic config swap
 type Config struct {
 	NetworkTimeoutsSec struct {
 		Transport TransportTimeoutes `yaml:"transport"`
@@ -71,46 +73,80 @@ type Config struct {
 	Routes    []Route    `yaml:"routes"`
 }
 
-// Finds host URL via linear search
-func (config *Config) findHostByName(name string) (string, error) {
-	for _, upstream := range config.Upstreams {
-		if upstream.Name == name {
-			return upstream.Host, nil
-		}
-	}
-
-	return "", errors.New("Host not found")
-}
-
 // Decides which API route to use given a path
 //
 // # Don't change signature
+// also prob need Router struct
 func (config *Config) decideRoute(path string) (*url.URL, error) {
 	// TODO: obviously add support for other rules
 	log.Printf("[decideRoute]: Received input: %v\n", path)
+
+	// Mapping services` names to hosts` URLs
+	urls := make(map[string]*url.URL)
+	for _, upstream := range config.Upstreams {
+		name := upstream.Name
+		host := upstream.Host
+
+		url, err := url.Parse(host)
+		if err != nil {
+			log.Printf("[decidePath]: Error parsing host url from config: %v\n", err)
+		}
+		urls[name] = url
+	}
+
+	// Path
 	for _, route := range config.Routes {
-		routePath := route.Rules.PathPrefix
+		routePath := route.Rule.Path
 		if routePath == path {
 			name := route.Upstream
-			host, err := config.findHostByName(name)
+			url, ok := urls[name]
 
-			if err != nil {
-				log.Printf("[decidePath]: %v\n", err)
-				return nil, errors.New("Path not found")
+			if !ok {
+				log.Println("[decidePath]: Route not found")
+				return nil, errors.New("Route not found")
 			}
 
-			log.Printf("HOST: %v, path: %v\n", host, path)
-
-			url, err := url.Parse(host)
-			if err != nil {
-				log.Printf("[decidePath]: Error parsing host url from config: %v\n", err)
-			}
 			url.Path = "/api"
 			return url, nil
 		}
 	}
 
-	return nil, errors.New("Path not found")
+	// Prefix
+	for _, route := range config.Routes {
+		prefix := route.Rule.PathPrefix
+		if prefix == "" {
+			continue
+		}
+		// FIXME: should be different logic, will catch /usersfoo for /users
+		if strings.HasPrefix(path, prefix) {
+			log.Printf("Found prefix: %v for %v\n", prefix, path)
+			upstreamService := route.Upstream
+			host, ok := urls[upstreamService]
+
+			if !ok {
+				log.Printf(
+					"[decideRoute]: host not found in upstreams\nHost %v\nUpstream %v\n",
+					host, upstreamService)
+				return nil, errors.New("Unknown host URL")
+			}
+
+			url := &url.URL{
+				Scheme: host.Scheme,
+				Host:   host.Host,
+				// Path:   path, // strip prefix or some
+				Path: "/api",
+			}
+
+			return url, nil
+		}
+	}
+
+	// Headers
+	// no idea like we should pass r.In and look at headers?
+	// the same with method and query parameters
+
+	log.Printf("[decideRoute]: No match for %v\n", path)
+	return nil, errors.New("Route not found")
 } // test this function
 
 func main() {
@@ -133,15 +169,6 @@ func main() {
 
 	// TODO: route policy
 	// TODO: hot reload
-	backendURLs := make([]*url.URL, 0)
-	for _, upstream := range config.Upstreams {
-		backendURL, err := url.Parse(upstream.Host)
-		if err != nil {
-			log.Fatalf("Error parsing the url: %v\n", err)
-		}
-		backendURLs = append(backendURLs, backendURL)
-	}
-
 	toSec := func(d int) time.Duration { return time.Duration(d) * time.Second }
 	timeoutsTransport := config.NetworkTimeoutsSec.Transport
 	timeoutsServer := config.NetworkTimeoutsSec.Server
@@ -149,13 +176,14 @@ func main() {
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			route, err := config.decideRoute(r.In.URL.Path)
+			log.Println("DECIDED: ", route)
 
 			if err != nil {
 				ctx := context.WithValue(r.Out.Context(), "proxyError", http.StatusNotFound)
 				r.Out = r.Out.WithContext(ctx)
 				// FIXME: ErrorHandler is triggered because scheme is ""
-				// because the route wasn't found, not after entering this block
-				// it's correct but DOESN'T LET ME SLEEP
+				// because the route wasn't found, not because we entered this block
+				// it works but it DOESN'T LET ME SLEEP
 				return
 			}
 
@@ -211,6 +239,7 @@ func main() {
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// FIXME: context timeout depends on server timeout
 			// (user can define how long to wait for the response body)
+			// SOLUTION: basically just map name to timeout on config init
 			ctx, cancel := context.WithTimeout(r.Context(), toSec(timeoutsServer.Context))
 			defer cancel()
 			proxy.ServeHTTP(w, r.WithContext(ctx))

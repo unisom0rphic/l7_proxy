@@ -9,7 +9,7 @@ func TestDecideRoute(t *testing.T) {
 		},
 		Routes: []Route{
 			{
-				Rules: Policy{
+				Rule: Rule{
 					PathPrefix: "/api/test",
 				},
 				Upstream: "test",
