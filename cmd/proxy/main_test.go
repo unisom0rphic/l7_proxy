@@ -1,21 +1,28 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/unisom0rphic/l7proxy/internal/config"
+	"github.com/unisom0rphic/l7proxy/internal/routing"
+)
 
 func TestDecideRoute(t *testing.T) {
-	config := Config{
-		Upstreams: []Upstream{
+	cfg := &config.Config{
+		Upstreams: []config.Upstream{
 			{Name: "test", Host: "http://testnet:3000"},
 		},
-		Routes: []Route{
+		Routes: []config.Route{
 			{
-				Rule: Rule{
+				Rule: config.Rule{
 					PathPrefix: "/api/test",
 				},
 				Upstream: "test",
 			},
 		},
 	}
+	r, _ := routing.NewRouter(cfg)
+
 	tests := []struct {
 		path     string
 		expected string
@@ -24,7 +31,7 @@ func TestDecideRoute(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		result, _ := config.decideRoute(tc.path)
+		result, _ := r.DecideRoute(tc.path)
 		if result.String() != tc.expected {
 			t.Errorf("Input: %s, expected %q, got: %q\n", tc.path, tc.expected, result)
 		}
