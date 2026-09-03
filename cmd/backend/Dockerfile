@@ -1,26 +1,22 @@
 FROM golang:1.26-alpine AS builder
 
-ENV PORT=3000
-
+ENV PORT=8080
 WORKDIR /app
 
-COPY go.mod go.su[m] ./
+COPY go.mod go.sum ./
+RUN go mod download
 
-RUN if [ -f go.sum ]; then go mod download; else go mod tidy; fi
+COPY cmd/backend/ ./cmd/backend/
 
-COPY . .
-
-RUN CGO_ENABLED=0 GOOS=linux go build -o main .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/backend ./cmd/backend
 
 FROM alpine:3.20
 
 RUN adduser -D appuser
 USER appuser
 
-WORKDIR /app
-
-COPY --from=builder /app/main .
+COPY --from=builder /out/backend backend
 
 EXPOSE $PORT
 
-CMD ["./main"]
+CMD ["./backend"]
