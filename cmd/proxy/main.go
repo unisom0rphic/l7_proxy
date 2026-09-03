@@ -28,37 +28,37 @@ func main() {
 	defer stop()
 
 	configPath := "config.yaml"
-	proxyRouter, err := routing.CreateFromConfig(configPath)
+	proxyRouter, err := routing.CreateFromConfig(ctx, configPath)
 
 	if err != nil {
 		log.Fatalln("Unable to create router: ", err)
 	}
 
-	log.Printf("CONFIG: %v\n", proxyRouter.Config)
+	log.Printf("CONFIG: %v\n", proxyRouter.AtomicConfig.Load())
 
 	toSec := func(d int) time.Duration { return time.Duration(d) * time.Second }
-	timeoutsTransport := proxyRouter.Config.NetworkTimeoutsSec.Transport
-	timeoutsServer := proxyRouter.Config.NetworkTimeoutsSec.Server
+
+	// TODO: make fields unexported and provide only getters
+	timeoutsTransport := proxyRouter.GetConfig().NetworkTimeoutsSec.Transport
+	timeoutsServer := proxyRouter.GetConfig().NetworkTimeoutsSec.Server
 
 	proxy := &httputil.ReverseProxy{
-		Rewrite: func(r *httputil.ProxyRequest) {
-			route, err := proxyRouter.DecideRoute(r.In.URL.Path)
-			log.Println("DECIDED: ", route)
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			route, err := proxyRouter.DecideRoute(pr.In.URL.Path)
 
 			if err != nil {
-				ctx := context.WithValue(r.Out.Context(), "proxyError", http.StatusNotFound)
-				r.Out = r.Out.WithContext(ctx)
+				ctx := context.WithValue(pr.Out.Context(), "proxyError", http.StatusNotFound)
+				pr.Out = pr.Out.WithContext(ctx)
 				// FIXME: ErrorHandler is triggered because scheme is ""
 				// because the route wasn't found, not because we entered this block
 				// it works but it DOESN'T LET ME SLEEP
 				return
 			}
 
-			log.Printf("Route: %v\n", route)
+			log.Println("DECIDED: ", route)
 
-			r.SetXForwarded()
-			r.Out.URL = route
-			r.Out.Host = route.Host
+			pr.SetXForwarded()
+			pr.SetURL(route)
 		},
 
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
