@@ -7,8 +7,10 @@ import (
 	"log"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/unisom0rphic/l7proxy/internal/config"
@@ -23,7 +25,6 @@ type Router struct {
 // Decides which API route to use given a path
 //
 // # Don't change signature
-// also prob need Router struct
 func (router *Router) DecideRoute(path string) (*url.URL, error) {
 	// TODO: obviously add support for other rules
 	log.Printf("[decideRoute]: Received input: %v\n", path)
@@ -98,7 +99,6 @@ func CreateFromConfig(ctx context.Context, configPath string) (*Router, error) {
 	}
 	router.configPath = configPath
 
-	// TODO: pass context so it won't loop forever
 	router.startMonitoringConfigUpdates(ctx)
 
 	return router, nil
@@ -112,8 +112,9 @@ func mapNamesToHosts(cfg *config.Config) (map[string]*url.URL, error) {
 		host := upstream.Host
 
 		url, err := url.Parse(host)
-		// FIXME: will parse localhost:8080 as scheme=localhost opaque=8080,
-		// so should check that scheme in (http, https) and host != null
+		if !slices.Contains([]string{"http", "https"}, url.Scheme) || url.Scheme == "" {
+			return nil, fmt.Errorf("Error parsing config url for %s: incorrect scheme: %s", name, host)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("error mapping upstream %s to host %s, %w", name, host, err)
 		}
@@ -152,10 +153,18 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 	// Listener loop
 	go func() {
 		defer watcher.Close()
+
+		configCooldown := time.NewTimer(0)
+		if !configCooldown.Stop() {
+			<-configCooldown.C
+		}
+		defer configCooldown.Stop()
+
+		onCoolDown := false
+
 		for {
 			select {
 			case <-ctx.Done():
-				// FIXME: usually there is a race condition in this branch it seems
 				log.Printf("it's me monitor I'm dying cause of context")
 				return
 			case event, ok := <-watcher.Events:
@@ -173,12 +182,18 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 				}
 
 				if event.Has(fsnotify.Write) {
+					if onCoolDown {
+						continue
+					}
 					log.Printf("Config modified: %s", event.Name)
 					router.updateConfig()
+					onCoolDown = true
+					configCooldown.Reset(1 * time.Second)
 				} else if event.Has(fsnotify.Remove) {
-					// FIXME: should be graceful shutdown (or panic)
-					log.Fatalf("Config deleted: %s", event.Name)
+					panic(fmt.Sprintf("Config deleted: %s", event.Name))
 				}
+			case <-configCooldown.C:
+				onCoolDown = false
 			case err, ok := <-watcher.Errors:
 				if !ok {
 					return
