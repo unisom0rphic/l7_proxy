@@ -19,6 +19,7 @@ func getenv(key string, def string) string {
 
 func main() {
 	serviceName := getenv("SERVICE_NAME", "unnamed")
+	endpoint := "/api/" + serviceName
 	port := getenv("PORT", "3000")
 	configLatency, _ := strconv.Atoi(getenv("LATENCY_MS", "0"))
 	errorRate, _ := strconv.ParseFloat(getenv("ERROR_RATE", "0"), 64)
@@ -41,7 +42,7 @@ func main() {
 		fmt.Fprintf(w, "%s: success\n", serviceName)
 	}
 
-	http.HandleFunc("/api", handler)
+	http.HandleFunc(endpoint, handler)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	http.HandleFunc("/hang", func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(60 * time.Second)

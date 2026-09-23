@@ -34,13 +34,13 @@ func main() {
 		log.Fatalln("Unable to create router: ", err)
 	}
 
-	log.Printf("CONFIG: %v\n", proxyRouter.AtomicConfig.Load())
+	log.Printf("CONFIG: %v\n", proxyRouter.Config())
 
 	toSec := func(d int) time.Duration { return time.Duration(d) * time.Second }
 
 	// TODO: make fields unexported and provide only getters
-	timeoutsTransport := proxyRouter.GetConfig().NetworkTimeoutsSec.Transport
-	timeoutsServer := proxyRouter.GetConfig().NetworkTimeoutsSec.Server
+	timeoutsTransport := proxyRouter.Config().NetworkTimeoutsSec.Transport
+	timeoutsServer := proxyRouter.Config().NetworkTimeoutsSec.Server
 
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -58,7 +58,7 @@ func main() {
 			log.Println("DECIDED: ", route)
 
 			pr.SetXForwarded()
-			pr.SetURL(route)
+			pr.Out.URL = route
 		},
 
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

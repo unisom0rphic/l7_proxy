@@ -19,7 +19,7 @@ import (
 type Router struct {
 	nameToHost   map[string]*url.URL
 	configPath   string
-	AtomicConfig atomic.Pointer[config.Config]
+	atomicConfig atomic.Pointer[config.Config]
 }
 
 // Decides which API route to use given a path
@@ -30,7 +30,7 @@ func (router *Router) DecideRoute(path string) (*url.URL, error) {
 	log.Printf("[decideRoute]: Received input: %v\n", path)
 
 	// Path
-	for _, route := range router.AtomicConfig.Load().Routes {
+	for _, route := range router.Config().Routes {
 		routePath := route.Rule.Path
 		if routePath == path {
 			name := route.Upstream
@@ -40,23 +40,29 @@ func (router *Router) DecideRoute(path string) (*url.URL, error) {
 				log.Println("[decidePath]: Route not found")
 				return nil, errors.New("route not found")
 			}
+			log.Println("[decidePath]: Route found: ", host)
 
-			// TODO: maybe create a method to create a url given
-			// host and path?
 			return &url.URL{
 				Scheme: host.Scheme,
 				Host:   host.Host,
+				Path:   path,
 			}, nil
 		}
 	}
 
 	// Prefix
-	for _, route := range router.AtomicConfig.Load().Routes {
+	for _, route := range router.Config().Routes {
 		prefix := route.Rule.PathPrefix
 		if prefix == "" {
 			continue
 		}
-		// FIXME: should be different logic, will catch /usersfoo for /users
+
+		rewrite := route.Rule.Rewrite
+		// Use rule`s `path` if `rewrite` is empty
+		if rewrite == "" {
+			rewrite = route.Rule.Path
+		}
+
 		if strings.HasPrefix(path, prefix) {
 			log.Printf("Found prefix: %v for %v\n", prefix, path)
 			upstreamService := route.Upstream
@@ -72,7 +78,7 @@ func (router *Router) DecideRoute(path string) (*url.URL, error) {
 			url := &url.URL{
 				Scheme: host.Scheme,
 				Host:   host.Host,
-				// Path:   path, // strip prefix or some
+				Path:   rewrite,
 			}
 
 			return url, nil
@@ -219,7 +225,7 @@ func (router *Router) updateConfig() error {
 	if err != nil {
 		return fmt.Errorf("error updating config: %w", err)
 	}
-	router.AtomicConfig.Store(cfg)
+	router.atomicConfig.Store(cfg)
 	nameToHost, err := mapNamesToHosts(cfg)
 	if err != nil {
 		return fmt.Errorf("updating router config failed during upstream->host mapping: %w", err)
@@ -229,9 +235,9 @@ func (router *Router) updateConfig() error {
 }
 
 func (router *Router) swapConfig(cfg *config.Config) {
-	router.AtomicConfig.Store(cfg)
+	router.atomicConfig.Store(cfg)
 }
 
-func (router *Router) GetConfig() *config.Config {
-	return router.AtomicConfig.Load()
+func (router *Router) Config() *config.Config {
+	return router.atomicConfig.Load()
 }

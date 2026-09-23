@@ -31,6 +31,7 @@ type Rule struct {
 	PathPrefix string `yaml:"path_prefix"`
 	Header     string `yaml:"header"`
 	Path       string `yaml:"path"`
+	Rewrite    string `yaml:"rewrite"`
 	// etc
 }
 
