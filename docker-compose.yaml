@@ -7,9 +7,9 @@ services:
       - "8080:8080"
     environment:
       PORT: "8080"
-    configs:
-      - source: proxy_config
-        target: config.yaml
+      CONFIG_PATH: /etc/proxy/config.yaml
+    volumes:
+      - ./cmd/proxy:/etc/proxy:ro
   users-prod:
     build: 
       context: .
@@ -44,7 +44,3 @@ services:
       PORT: "3003"
       SERVICE_NAME: "orders"
       LATENCY_MS: 30
-
-configs:
-  proxy_config:
-    file: ./cmd/proxy/config_example.yaml
