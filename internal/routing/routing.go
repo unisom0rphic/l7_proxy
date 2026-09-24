@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"slices"
@@ -22,12 +23,11 @@ type Router struct {
 	atomicConfig atomic.Pointer[config.Config]
 }
 
-// Decides which API route to use given a path
-//
-// # Don't change signature
-func (router *Router) DecideRoute(path string) (*url.URL, error) {
-	// TODO: obviously add support for other rules
+// Decides which API route to use for a given http.Request
+func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
+	path := r.URL.Path
 	log.Printf("[decideRoute]: Received input: %v\n", path)
+	candidates := make([]*url.URL, 0)
 
 	// Path
 	for _, route := range router.Config().Routes {
@@ -42,11 +42,12 @@ func (router *Router) DecideRoute(path string) (*url.URL, error) {
 			}
 			log.Println("[decidePath]: Route found: ", host)
 
-			return &url.URL{
+			url := &url.URL{
 				Scheme: host.Scheme,
 				Host:   host.Host,
 				Path:   path,
-			}, nil
+			}
+			candidates = append(candidates, url)
 		}
 	}
 
@@ -75,22 +76,45 @@ func (router *Router) DecideRoute(path string) (*url.URL, error) {
 				return nil, errors.New("unknown host URL")
 			}
 
+			// Method check
+			if method := route.Rule.Method; method != "" {
+				if method != r.Method {
+					return nil, errors.New("Method mismatch")
+				}
+			}
+
+			// Headers existence
+			if header := route.Rule.Header; header != "" {
+				if _, ok := r.Header[header]; !ok {
+					return nil, errors.New("Header not found")
+				}
+			}
+
 			url := &url.URL{
 				Scheme: host.Scheme,
 				Host:   host.Host,
 				Path:   rewrite,
 			}
-
-			return url, nil
+			candidates = append(candidates, url)
 		}
 	}
 
-	// Headers
-	// no idea like we should pass r.In and look at headers?
-	// the same with method and query parameters
+	if len(candidates) == 0 {
+		log.Printf("[decideRoute]: No match for %v\n", path)
+		return nil, errors.New("route not found")
+	}
 
-	log.Printf("[decideRoute]: No match for %v\n", path)
-	return nil, errors.New("route not found")
+	// Looking for the longest URL
+	maxLen := 0
+	var bestCandidate *url.URL
+	for _, candidate := range candidates {
+		if len(candidate.Path) > maxLen {
+			maxLen = len(candidate.Path)
+			bestCandidate = candidate
+		}
+	}
+
+	return bestCandidate, nil
 }
 
 func CreateFromConfig(ctx context.Context, configPath string) (*Router, error) {
@@ -177,6 +201,7 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 				if !ok {
 					return
 				}
+				log.Printf("EVENT: %s | %s", event.Name, event.Op)
 
 				absEventPath, err := filepath.Abs(event.Name)
 				if err != nil {
@@ -225,7 +250,7 @@ func (router *Router) updateConfig() error {
 	if err != nil {
 		return fmt.Errorf("error updating config: %w", err)
 	}
-	router.atomicConfig.Store(cfg)
+	router.swapConfig(cfg)
 	nameToHost, err := mapNamesToHosts(cfg)
 	if err != nil {
 		return fmt.Errorf("updating router config failed during upstream->host mapping: %w", err)

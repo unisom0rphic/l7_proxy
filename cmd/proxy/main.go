@@ -27,14 +27,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	configPath := "config.yaml"
+	configPath := getenv("CONFIG_PATH", "config.yaml")
 	proxyRouter, err := routing.CreateFromConfig(ctx, configPath)
 
 	if err != nil {
 		log.Fatalln("Unable to create router: ", err)
 	}
 
-	log.Printf("CONFIG: %v\n", proxyRouter.Config())
+	log.Printf("CONFIG: %+v\n", proxyRouter.Config())
 
 	toSec := func(d int) time.Duration { return time.Duration(d) * time.Second }
 
@@ -44,7 +44,7 @@ func main() {
 
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			route, err := proxyRouter.DecideRoute(pr.In.URL.Path)
+			route, err := proxyRouter.DecideRoute(pr.In)
 
 			if err != nil {
 				ctx := context.WithValue(pr.Out.Context(), "proxyError", http.StatusNotFound)

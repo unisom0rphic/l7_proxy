@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/url"
+	"nett/http"
 	"testing"
 
 	"github.com/unisom0rphic/l7proxy/internal/config"
@@ -31,7 +33,8 @@ func TestDecideRoute(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		result, _ := r.DecideRoute(tc.path)
+		req := &http.Request{URL: &url.URL{Path: tc.path}}
+		result, _ := r.DecideRoute(req)
 		if result.String() != tc.expected {
 			t.Errorf("Input: %s, expected %q, got: %q\n", tc.path, tc.expected, result)
 		}
