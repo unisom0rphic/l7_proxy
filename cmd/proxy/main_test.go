@@ -1,8 +1,8 @@
 package main
 
 import (
+	"net/http"
 	"net/url"
-	"nett/http"
 	"testing"
 
 	"github.com/unisom0rphic/l7proxy/internal/config"

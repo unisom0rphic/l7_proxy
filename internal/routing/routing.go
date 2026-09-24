@@ -29,7 +29,7 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 	log.Printf("[decideRoute]: Received input: %v\n", path)
 	candidates := make([]*url.URL, 0)
 
-	// Path
+	// Path: if found exact match - return immediately
 	for _, route := range router.Config().Routes {
 		routePath := route.Rule.Path
 		if routePath == path {
@@ -42,12 +42,26 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 			}
 			log.Println("[decidePath]: Route found: ", host)
 
+			// Method check
+			if method := route.Rule.Method; method != "" {
+				if method != r.Method {
+					return nil, errors.New("Method mismatch")
+				}
+			}
+
+			// Headers existence
+			if header := route.Rule.Header; header != "" {
+				if _, ok := r.Header[header]; !ok {
+					return nil, errors.New("Header not found")
+				}
+			}
+
 			url := &url.URL{
 				Scheme: host.Scheme,
 				Host:   host.Host,
 				Path:   path,
 			}
-			candidates = append(candidates, url)
+			return url, nil
 		}
 	}
 
@@ -77,16 +91,14 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 			}
 
 			// Method check
-			if method := route.Rule.Method; method != "" {
-				if method != r.Method {
-					return nil, errors.New("Method mismatch")
-				}
+			if method := route.Rule.Method; method != "" && method != r.Method {
+				continue
 			}
 
 			// Headers existence
 			if header := route.Rule.Header; header != "" {
 				if _, ok := r.Header[header]; !ok {
-					return nil, errors.New("Header not found")
+					continue
 				}
 			}
 
@@ -201,7 +213,6 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 				if !ok {
 					return
 				}
-				log.Printf("EVENT: %s | %s", event.Name, event.Op)
 
 				absEventPath, err := filepath.Abs(event.Name)
 				if err != nil {
