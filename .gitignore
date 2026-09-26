@@ -1,2 +1,3 @@
 /bin
 cmd/proxy/config.yaml
+*.log

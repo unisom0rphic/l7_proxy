@@ -26,6 +26,9 @@ type Router struct {
 // Decides which API route to use for a given http.Request
 func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 	path := r.URL.Path
+	if path == "" {
+		return nil, errors.New("empty url")
+	}
 	log.Printf("[decideRoute]: Received input: %v\n", path)
 	candidates := make([]*url.URL, 0)
 
