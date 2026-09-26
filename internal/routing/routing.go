@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -29,7 +29,7 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 	if path == "" {
 		return nil, errors.New("empty url")
 	}
-	log.Printf("[decideRoute]: Received input: %v\n", path)
+	slog.Debug("decideRoute: received input", "path", path)
 	candidates := make([]*url.URL, 0)
 
 	// Path: if found exact match - return immediately
@@ -40,10 +40,10 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 			host, ok := router.nameToHost[name]
 
 			if !ok {
-				log.Println("[decidePath]: Route not found")
+				slog.Debug("decidePath: route not found")
 				return nil, errors.New("route not found")
 			}
-			log.Println("[decidePath]: Route found: ", host)
+			slog.Debug("decidePath: route found", "host", host)
 
 			// Method check
 			if method := route.Rule.Method; method != "" {
@@ -82,14 +82,12 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 		}
 
 		if strings.HasPrefix(path, prefix) {
-			log.Printf("Found prefix: %v for %v\n", prefix, path)
+			slog.Debug("found prefix", "prefix", prefix, "path", path)
 			upstreamService := route.Upstream
 			host, ok := router.nameToHost[upstreamService]
 
 			if !ok {
-				log.Printf(
-					"[decideRoute]: host not found in upstreams\nHost %v\nUpstream %v\n",
-					host, upstreamService)
+				slog.Error("decideRoute: host not found in upstreams", "host", host, "upstream", upstreamService)
 				return nil, errors.New("unknown host URL")
 			}
 
@@ -115,7 +113,7 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 	}
 
 	if len(candidates) == 0 {
-		log.Printf("[decideRoute]: No match for %v\n", path)
+		slog.Debug("decideRoute: no match", "path", path)
 		return nil, errors.New("route not found")
 	}
 
@@ -210,7 +208,7 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 		for {
 			select {
 			case <-ctx.Done():
-				log.Printf("it's me monitor I'm dying cause of context")
+				slog.Info("monitor shutting down due to context cancellation")
 				return
 			case event, ok := <-watcher.Events:
 				if !ok {
@@ -230,7 +228,7 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 					if onCoolDown {
 						continue
 					}
-					log.Printf("Config modified: %s", event.Name)
+					slog.Info("config modified", "file", event.Name)
 					router.updateConfig()
 					onCoolDown = true
 					configCooldown.Reset(1 * time.Second)
@@ -243,7 +241,7 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 				if !ok {
 					return
 				}
-				log.Println("Watcher error: ", err)
+				slog.Error("watcher error", "error", err)
 			}
 
 		}
@@ -253,7 +251,7 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("adding directory (%s) to watch list failed: %w", parentDir, err)
 	}
-	log.Println("Monitoring changes for ", router.configPath)
+	slog.Info("monitoring changes", "config", router.configPath)
 
 	return nil
 }

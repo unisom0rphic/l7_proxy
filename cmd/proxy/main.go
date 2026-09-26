@@ -3,7 +3,8 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -24,6 +25,21 @@ func getenv(key string, def string) string {
 }
 
 func main() {
+	// Logging
+	logFile, err := os.OpenFile("proxy.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		panic(err)
+	}
+	defer logFile.Close()
+
+	multiWriter := io.MultiWriter(logFile, os.Stdout)
+	slogOpts := &slog.HandlerOptions{
+		AddSource: true,
+		Level:     slog.LevelDebug,
+	}
+	logHandler := slog.NewTextHandler(multiWriter, slogOpts)
+	slog.SetDefault(slog.New(logHandler))
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -31,10 +47,10 @@ func main() {
 	proxyRouter, err := routing.CreateFromConfig(ctx, configPath)
 
 	if err != nil {
-		log.Fatalln("Unable to create router: ", err)
+		slog.Error("Unable to create router", "error", err)
 	}
 
-	log.Printf("CONFIG: %+v\n", proxyRouter.Config())
+	slog.Info("CONFIG", "config", proxyRouter.Config())
 
 	toSec := func(d int) time.Duration { return time.Duration(d) * time.Second }
 
@@ -55,14 +71,14 @@ func main() {
 				return
 			}
 
-			log.Println("DECIDED: ", route)
+			slog.Debug("Router decision", "route", route)
 
 			pr.SetXForwarded()
 			pr.Out.URL = route
 		},
 
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("HTTP error on %s %s: %v\n", r.Method, r.URL.Path, err)
+			slog.Info("Proxy HTTP error", "method", r.Method, "path", r.URL.Path, "error", err)
 			e := r.Context().Value("proxyError")
 
 			if e == http.StatusBadRequest {
@@ -84,7 +100,7 @@ func main() {
 			method := resp.Request.Method
 			status := resp.StatusCode
 			path := resp.Request.URL.Path
-			log.Printf("Method: %v | StatusCode: %v | Path: %v\n", method, status, path)
+			slog.Debug("Backend response", "method", method, "status_code", status, "path", path)
 			return nil
 		},
 
@@ -116,23 +132,23 @@ func main() {
 	}
 
 	go func() {
-		log.Println("Proxy running at ", port)
+		slog.Info("Proxy running", "port", port)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("Server error: %v\n", err)
+			slog.Error("Server error", "error", err)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("Shutdown signal received")
+	slog.Info("Shutdown signal received")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("Shutdown failed: %v\n", err)
+		slog.Error("Shutdown failed", "error", err)
 	}
 
 	// clean up will be here
-	log.Println("Server stopped")
+	slog.Info("Server stopped")
 
 }
