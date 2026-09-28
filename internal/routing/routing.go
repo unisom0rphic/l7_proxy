@@ -87,8 +87,13 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 			host, ok := router.nameToHost[upstreamService]
 
 			if !ok {
-				slog.Error("decideRoute: host not found in upstreams", "host", host, "upstream", upstreamService)
-				return nil, errors.New("unknown host URL")
+				// If we reach this branch it means the config was incorrectly parsed,
+				// which means serious issue inside the parser that bypasses the tests.
+				// TODO: consider panicking when config validator ensures each name is mapped
+				// to the host.
+				slog.Error("decideRoute: host not found in upstreams",
+					"upstream", upstreamService, "prefix", prefix, "path", path)
+				return nil, errors.New("URL host not mapped during config parse")
 			}
 
 			// Method check

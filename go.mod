@@ -7,4 +7,7 @@ require (
 	go.yaml.in/yaml/v4 v4.0.0-rc.6
 )
 
-require golang.org/x/sys v0.13.0 // indirect
+require (
+	golang.org/x/sys v0.13.0 // indirect
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
+)

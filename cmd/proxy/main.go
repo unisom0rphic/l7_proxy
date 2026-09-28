@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/unisom0rphic/l7proxy/internal/routing"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 func getenv(key string, def string) string {
@@ -26,11 +27,13 @@ func getenv(key string, def string) string {
 
 func main() {
 	// Logging
-	logFile, err := os.OpenFile("proxy.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		panic(err)
+	logFile := &lumberjack.Logger{
+		Filename:   "proxy.log",
+		MaxSize:    100,
+		MaxBackups: 3,
+		MaxAge:     28,
+		Compress:   true,
 	}
-	defer logFile.Close()
 
 	multiWriter := io.MultiWriter(logFile, os.Stdout)
 	slogOpts := &slog.HandlerOptions{

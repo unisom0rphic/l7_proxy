@@ -48,7 +48,7 @@ routes:
 var (
 	proxyBase    = getenv("PROXY_ADDR", "http://localhost:8080")
 	backendBase  = getenv("BACKEND_ADDR", "http://localhost:3001")
-	apiPath      = getenv("API_PATH", "/api/users-prod")
+	apiPath      = getenv("API_PATH", "/api/users_prod")
 	hangPath     = getenv("HANG_PATH", "/hang")
 	hangBodyPath = getenv("HANG_BODY_PATH", "/hang-body")
 	// DEAD_PATH is optional: a path routed to an upstream on a dead port.
@@ -128,14 +128,14 @@ func TestProxy_NoRoute404(t *testing.T) {
 	}
 }
 
-// Route exists, backend unreachable - 500 (by contract, not 502).
+// Route exists, backend unreachable - 502.
 //
 // There is no dedicated dead route in the config, so two modes:
 //  1. env DEAD_PATH set (route to an upstream on a dead port) - test through it;
 //  2. otherwise - stop the backend and run only this test:
-//     go test -run TestProxy_DeadUpstream500
+//     DEAD_PATH=/dead go test -run TestProxy_DeadUpstream502 -v
 //     (live backend - skip, so the shared run stays green: TestProxy_ForwardsUpstreamResponse needs it up).
-func TestProxy_DeadUpstream500(t *testing.T) {
+func TestProxy_DeadUpstream502(t *testing.T) {
 	requireProxy(t)
 
 	target := deadPath
@@ -150,8 +150,8 @@ func TestProxy_DeadUpstream500(t *testing.T) {
 	if status == http.StatusNotFound {
 		t.Skipf("route %s not configured on the proxy", target)
 	}
-	if status != http.StatusInternalServerError {
-		t.Errorf("want 500 when the backend is unreachable, got %d", status)
+	if status != http.StatusBadGateway {
+		t.Errorf("want 502 when the backend is unreachable, got %d", status)
 	}
 }
 
