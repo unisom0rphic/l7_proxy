@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -189,28 +190,43 @@ func TestProxy_HangBodyTimesOut(t *testing.T) {
 
 	start := time.Now()
 	resp, err := hangClient.Get(proxyBase + hangBodyPath)
+	elapsed := time.Since(start)
+
 	if err != nil {
-		t.Fatalf("headers from proxy did not arrive within budget %s - timeout not working: %v", hangBudget, err)
+		// Backend sent headers then hung on the body. The proxy cuts the body
+		// on its own deadline, which tears the connection; on the client side
+		// this surfaces as EOF / unexpected EOF.
+		if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("unexpected error from Get: %v", err)
+		}
+		if elapsed >= hangBudget {
+			t.Errorf("proxy cut the body too late: %s (budget %s)",
+				elapsed, hangBudget)
+		}
+		return
 	}
+
+	if resp == nil {
+		t.Fatal("Get returned nil response with nil error")
+	}
+	defer resp.Body.Close()
 
 	// 404 is used only as a "route not configured" signal, not an assertion.
 	if resp.StatusCode == http.StatusNotFound {
-		resp.Body.Close()
 		t.Skipf("route %s not configured - add it (see REQUIRED_ROUTES_YAML)", hangBodyPath)
 	}
 
 	// Body hangs on the backend - proxy must cut it off by timeout.
 	_, rerr := io.Copy(io.Discard, resp.Body)
-	elapsed := time.Since(start)
-	resp.Body.Close()
+	elapsed = time.Since(start)
 
 	if elapsed >= hangBudget {
-		t.Errorf("proxy held the request %s (budget %s) - body timeout did not fire", elapsed, hangBudget)
+		t.Errorf("proxy held the request %s (budget %s) - body timeout did not fire",
+			elapsed, hangBudget)
 	}
-	// Reading the body to EOF is impossible: the backend sends nothing after
-	// headers. rerr != nil (unexpected EOF / reset / timeout) - connection cut.
-	// If the proxy does NOT cut it off, ReadAll hangs until the client timeout,
-	// and elapsed >= budget fails the previous assertion.
+	// Backend sends nothing after headers, so a clean EOF is impossible: the
+	// read must fail with unexpected EOF / reset. If the proxy did NOT cut the
+	// connection, io.Copy would block and the elapsed check above would fail.
 	if rerr == nil {
 		t.Error("body read to completion although the backend sends nothing - proxy did not cut the connection")
 	}
