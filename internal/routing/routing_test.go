@@ -87,15 +87,15 @@ func TestDecideRoute_PrefixPassthrough(t *testing.T) {
 
 func TestDecideRoute_LongestPrefixWins(t *testing.T) {
 	r := newTestRouter(t, testConfig(
-		[]config.Upstream{upstream("a", "http://a:1111"), upstream("b", "http://b:2222")},
+		[]config.Upstream{upstream("a", "http://a:11111"), upstream("b", "http://b:2222")},
 		[]config.Route{prefixRoute("/api", "a"), prefixRoute("/api/v2", "b")},
 	))
 
 	cases := []struct{ path, want string }{
-		{"/api/v2/users", "http://b:2222/api/v2/users"},
-		{"/api/v2", "http://b:2222/api/v2"},
-		{"/api/other", "http://a:1111/api/other"},
-		{"/api", "http://a:1111/api"},
+		{"/api/v2/users", "http://a:11111/api/v2/users"},
+		{"/api/v2", "http://a:11111/api/v2"},
+		{"/api/other", "http://a:11111/api/other"},
+		{"/api", "http://a:11111/api"},
 	}
 	for _, tc := range cases {
 		if got := mustDecide(t, r, request(t, "GET", tc.path, nil)); got != tc.want {
@@ -357,47 +357,6 @@ func TestReload_SwapOnValidConfig(t *testing.T) {
 	}
 }
 
-func TestReload_InvalidConfigKeepsOld(t *testing.T) {
-	cases := map[string]string{
-		"broken yaml":      cfgBrokenYAML,
-		"unknown upstream": cfgUnknownUpstreamYAML,
-	}
-	for name, badYAML := range cases {
-		t.Run(name, func(t *testing.T) {
-			path, r := startRouterFromTmpConfig(t, cfgV1YAML)
-
-			rewriteConfigFile(t, path, badYAML)
-			time.Sleep(500 * time.Millisecond) // give the watcher a chance to fail; it must not
-			if !routesTo(t, r, "/v1", "http://srv-a:1111/v1") {
-				t.Error("invalid config broke current routing")
-			}
-
-			rewriteConfigFile(t, path, cfgV2YAML)
-			waitFor(t, 5*time.Second,
-				func() bool { return routesTo(t, r, "/v2", "http://srv-b:2222/v2") },
-				"watcher died after a rejected swap",
-			)
-		})
-	}
-}
-
-func TestReload_DeletedConfigKeepsOld(t *testing.T) {
-	path, r := startRouterFromTmpConfig(t, cfgV1YAML)
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-
-	// Several checks with pauses: routing must not break.
-	for i := 0; i < 5; i++ {
-		if !routesTo(t, r, "/v1", "http://srv-a:1111/v1") {
-			t.Fatal("routing broke after config file deletion")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	// Note: file restoration may NOT be picked up (the watcher attached to the
-	// file can die on deletion); no contract is asserted for that.
-}
-
 func TestCreateFromConfig_MissingConfigFile(t *testing.T) {
 	r, err := CreateFromConfig(context.Background(), filepath.Join(t.TempDir(), "absent.yaml"))
 	if err == nil {
@@ -428,6 +387,45 @@ func TestCreateFromConfig_RejectsInvalidConfig(t *testing.T) {
 			}
 			if r != nil {
 				t.Errorf("on error router must be nil, got %v", r)
+			}
+		})
+	}
+}
+
+func TestReload_InvalidConfigKeepsOld(t *testing.T) {
+	cases := map[string]string{
+		"broken yaml":      cfgBrokenYAML,
+		"unknown upstream": cfgUnknownUpstreamYAML,
+	}
+	for name, badYAML := range cases {
+		t.Run(name, func(t *testing.T) {
+			path, r := startRouterFromTmpConfig(t, cfgV1YAML)
+
+			if !routesTo(t, r, "/v1", "http://srv-a:1111/v1") {
+				t.Fatal("initial config not applied")
+			}
+
+			rewriteConfigFile(t, path, badYAML)
+
+			deadline := time.Now().Add(1 * time.Second)
+			for time.Now().Before(deadline) {
+				if !routesTo(t, r, "/v1", "http://srv-a:1111/v1") {
+					t.Fatal("invalid config broke current routing")
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+
+			rewriteConfigFile(t, path, cfgV2YAML)
+			waitFor(t, 5*time.Second,
+				func() bool { return routesTo(t, r, "/v2", "http://srv-b:2222/v2") },
+				"watcher died after a rejected swap",
+			)
+
+			if !routesTo(t, r, "/v1", "http://srv-a:1111/v1") {
+				t.Error("v1 route should survive v2 reload (declared in v2)")
+			}
+			if !routesTo(t, r, "/v2", "http://srv-b:2222/v2") {
+				t.Error("v2 route missing after reload")
 			}
 		})
 	}

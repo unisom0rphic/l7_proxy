@@ -25,6 +25,9 @@ type Router struct {
 
 // Decides which API route to use for a given http.Request
 func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
+	if r.URL == nil {
+		return nil, errors.New("empty url")
+	}
 	path := r.URL.Path
 	if path == "" {
 		return nil, errors.New("empty url")
@@ -60,9 +63,10 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 			}
 
 			url := &url.URL{
-				Scheme: host.Scheme,
-				Host:   host.Host,
-				Path:   path,
+				Scheme:   host.Scheme,
+				Host:     host.Host,
+				Path:     path,
+				RawQuery: r.URL.RawQuery,
 			}
 			return url, nil
 		}
@@ -76,9 +80,15 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 		}
 
 		rewrite := route.Rule.Rewrite
+
 		// Use rule`s `path` if `rewrite` is empty
+		// TODO: proper handling, isolate to another function
 		if rewrite == "" {
-			rewrite = route.Rule.Path
+			if route.Rule.Path != "" {
+				rewrite = route.Rule.Path
+			} else {
+				rewrite = route.Rule.PathPrefix
+			}
 		}
 
 		if strings.HasPrefix(path, prefix) {
@@ -109,9 +119,10 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 			}
 
 			url := &url.URL{
-				Scheme: host.Scheme,
-				Host:   host.Host,
-				Path:   rewrite,
+				Scheme:   host.Scheme,
+				Host:     host.Host,
+				Path:     rewrite + path[len(prefix):],
+				RawQuery: r.URL.RawQuery,
 			}
 			candidates = append(candidates, url)
 		}
@@ -139,6 +150,14 @@ func CreateFromConfig(ctx context.Context, configPath string) (*Router, error) {
 	cfg, err := config.ParseConfig(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	errs := cfg.Validate()
+	if len(errs) > 0 {
+		for _, e := range errs {
+			slog.Error("config validation error", "err", e)
+		}
+		return nil, fmt.Errorf("invalid config")
 	}
 
 	router, err := NewRouter(cfg)
@@ -265,9 +284,19 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 func (router *Router) updateConfig() error {
 	cfg, err := config.ParseConfig(router.configPath)
 	if err != nil {
-		return fmt.Errorf("error updating config: %w", err)
+		return fmt.Errorf("error parsing config: %w", err)
 	}
+
+	errs := cfg.Validate()
+	if len(errs) > 0 {
+		for _, e := range errs {
+			slog.Error("config validation error", "err", e)
+		}
+		return fmt.Errorf("invalid config")
+	}
+
 	router.swapConfig(cfg)
+
 	nameToHost, err := mapNamesToHosts(cfg)
 	if err != nil {
 		return fmt.Errorf("updating router config failed during upstream->host mapping: %w", err)
