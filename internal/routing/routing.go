@@ -81,8 +81,7 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 
 		rewrite := route.Rule.Rewrite
 
-		// Use rule`s `path` if `rewrite` is empty
-		// TODO: proper handling, isolate to another function
+		// If rewrite field is empty - use path/prefix itself
 		if rewrite == "" {
 			if route.Rule.Path != "" {
 				rewrite = route.Rule.Path

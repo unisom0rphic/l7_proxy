@@ -1,0 +1,39 @@
+version: "3"
+
+vars:
+  CONFIG_LOCAL: ./cmd/proxy/config_local.yaml
+  CONFIG_TEST: ./cmd/proxy/config_test.yaml
+
+tasks:
+  default:
+    cmd: task --list
+
+  run:proxy:
+    desc: Run proxy locally
+    cmd: CONFIG_PATH={{.CONFIG_LOCAL}} go run ./cmd/proxy
+
+  up:local:
+    desc: Start proxy locally and backend containers in docker
+    cmds: 
+      - CONFIG_PATH={{.CONFIG_LOCAL}} go run ./cmd/proxy > /dev/null 2>&1 &
+      - docker compose up -d users-prod users-test orders
+
+  test:
+    desc: Run tests
+    cmd: CONFIG_PATH={{.CONFIG_TEST}} go test ./cmd/... ./internal/...
+
+  up:
+    desc: Start all containers in docker
+    cmd: docker compose up -d --build
+
+  down:
+    desc: Stop all running containers
+    cmd: docker compose down
+
+  down:local:
+    desc: Stop all running containers and kills the process called "proxy" (hopefully the right one)
+    cmds:
+      - docker compose down
+      - pkill -f proxy || true
+    
+

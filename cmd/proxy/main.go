@@ -51,6 +51,7 @@ func main() {
 
 	if err != nil {
 		slog.Error("Unable to create router", "error", err)
+		panic("Incorrect router configuration, unable to start the server")
 	}
 
 	slog.Info("CONFIG", "config", proxyRouter.Config())
