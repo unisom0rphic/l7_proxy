@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,6 +22,7 @@ type Router struct {
 	nameToHost   map[string]*url.URL
 	configPath   string
 	atomicConfig atomic.Pointer[config.Config]
+	nameHostLock sync.RWMutex
 }
 
 // Decides which API route to use for a given http.Request
@@ -93,7 +95,9 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 		if strings.HasPrefix(path, prefix) {
 			slog.Debug("found prefix", "prefix", prefix, "path", path)
 			upstreamService := route.Upstream
+			router.nameHostLock.RLock()
 			host, ok := router.nameToHost[upstreamService]
+			router.nameHostLock.RUnlock()
 
 			if !ok {
 				// If we reach this branch it means the config was incorrectly parsed,
@@ -252,6 +256,7 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 						continue
 					}
 					slog.Info("config modified", "file", event.Name)
+					// TODO: read/validate HERE to not block main
 					router.updateConfig()
 					onCoolDown = true
 					configCooldown.Reset(1 * time.Second)
@@ -300,7 +305,9 @@ func (router *Router) updateConfig() error {
 	if err != nil {
 		return fmt.Errorf("updating router config failed during upstream->host mapping: %w", err)
 	}
+	router.nameHostLock.Lock()
 	router.nameToHost = nameToHost
+	router.nameHostLock.Unlock()
 	return nil
 }
 
