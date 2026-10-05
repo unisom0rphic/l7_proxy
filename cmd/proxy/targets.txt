@@ -1,0 +1,2 @@
+GET http://127.0.0.1:8080/api/users_prod
+GET http://127.0.0.1:8080/orders

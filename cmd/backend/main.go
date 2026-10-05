@@ -1,5 +1,7 @@
 package main
 
+// A mock-backend created solely for testing purposes.
+
 import (
 	"fmt"
 	"log"
@@ -26,9 +28,9 @@ func main() {
 
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		isError := rand.Float64() < errorRate
-		time.Sleep(time.Duration(configLatency) * time.Millisecond)
-
-		log.Printf("%s: received headers: %v\n", serviceName, r.Header)
+		if configLatency > 0 {
+			time.Sleep(time.Duration(configLatency) * time.Millisecond)
+		}
 
 		if isError {
 			w.Header().Set("Content-Type", "text/plain")
@@ -39,7 +41,7 @@ func main() {
 
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "%s: success\n", serviceName)
+		w.Write([]byte(serviceName + ": success\n"))
 	}
 
 	http.HandleFunc(endpoint, handler)

@@ -2,3 +2,5 @@
 *.log
 config*
 !config_example.yaml
+bench-*/
+cmd/proxy/proxy
