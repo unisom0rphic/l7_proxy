@@ -1,20 +1,96 @@
-# L7 Ingress Controller
+# l7_proxy
 
-L7 Reverse Proxy to dynamically route backend requests
+An L7 HTTP reverse proxy in Go: routing, hot-reloadable config, and traffic mirroring.
 
-# Usage (WIP)
+## Features
+
+- Exact and prefix routing on path, method, and headers
+- Hot reload without restart; invalid configs are rejected, last known-good stays live
+- Forwarding via `net/http/httputil.ReverseProxy` - hop-by-hop headers stripped, `X-Forwarded-*` set
+- Configurable transport and server timeouts
+- Graceful shutdown on `SIGTERM`
+- Non-blocking traffic mirroring (**in progress**)
+- Prometheus metrics: requests, latency, failed config reloads
+
+## Requirements
+
+- Go 1.22+
+- Docker + Docker Compose
+- [Task](https://taskfile.dev/) (optional)
+
+## Quick Start
+
 ```bash
-# Set up testing environment
-cd cmd/backend
-docker compose up -d
-# Start reverse proxy
-cd ../proxy
-docker build -t proxy .
-docker run \
-    -v ./config.yaml:/app/config.yaml \
-    -p 8080:8080 \
-    --network backend_default \
-    -t proxy
-# Ensure everything works
-curl localhost:8080/api/users
+task up                 # everything in Docker
 ```
+
+Or locally:
+
+```bash
+cd ./cmd/proxy
+go build
+cp ./config_example.yaml ./config.yaml
+CONFIG_PATH=config.yaml ./proxy
+```
+
+Config example: [`cmd/proxy/config_example.yaml`](./cmd/proxy/config_example.yaml).
+
+## Configuration
+
+```yaml
+upstreams:
+  - name: users-prod
+    host: http://users-prod:3001
+    timeout_ms: 2000
+  - name: users-test
+    host: http://users-test:3002
+    timeout_ms: 2000
+  - name: orders
+    host: http://orders:3003
+    timeout_ms: 2000
+
+routes:
+  - rules:
+      path: /api/users
+    upstream: users-prod
+    mirror:
+      upstream: users-test
+      ratio: 0.2
+
+  - rules:
+      path-prefix: /orders
+      rewrite: /api/orders
+      method: GET
+    upstream: orders
+```
+
+Config is validated on load and on every reload. Invalid configs are rejected - the previous config stays live.
+
+## Hot Reload
+
+`fsnotify` or `SIGHUP` + debounce. Config is swapped via `atomic.Pointer[Config]`. Missing file at startup panics; missing file at runtime keeps the last known-good config.
+
+## Testing
+
+```bash
+task test
+# or
+go test ./... && go test -race ./...
+```
+
+## Taskfile
+
+| Task | Description |
+|---|---|
+| `task up` / `task down` | Start / stop containers |
+| `task up:local` / `task down:local` | Local proxy + Docker backends |
+| `task run:proxy` | Run only proxy locally |
+| `task test` | Run tests |
+
+## Docs
+
+Architecture decisions live in [`docs/adr`](./docs/adr).
+
+## License
+
+MIT.
