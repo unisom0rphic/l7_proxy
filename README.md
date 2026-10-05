@@ -66,6 +66,8 @@ routes:
 
 Config is validated on load and on every reload. Invalid configs are rejected - the previous config stays live.
 
+The list of possible configuration options is listed in [`docs/configuration`](.docs/configuration.md).
+
 ## Hot Reload
 
 `fsnotify` or `SIGHUP` + debounce. Config is swapped via `atomic.Pointer[Config]`. Missing file at startup panics; missing file at runtime keeps the last known-good config.
