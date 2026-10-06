@@ -1,0 +1,44 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName "JetBrains Mono"
+skinparam componentStyle rectangle
+skinparam ArrowColor #333333
+skinparam ArrowFontSize 12
+
+title Mirroring pipeline (shared worker pool)
+
+actor Client as C
+
+rectangle "Proxy process" {
+  component "HTTP handler" as H
+  component "io.ReadAll()\n[ADR-0003]" as R
+  queue "MirrorQueue\n(buffered chan, size = cfg.mirror.queue_size)\n-- backpressure --" as Q
+
+  rectangle "Shared worker pool" {
+    collections "W workers\nW = cfg.mirror.workers" as WP
+  }
+}
+
+file "config.yaml" as CFG
+cloud "Mirrors" as M
+
+C  --> H  : HTTP request
+H  --> R  : read body
+R  --> Q  : enqueue([]byte)
+H  --> C  : response
+
+CFG ..> WP : mirror.workers
+CFG ..> Q  : mirror.queue_size
+
+Q  --> WP : dequeue
+WP --> M  : fan-out POST\n(fire-and-forget)
+
+note right of Q
+  on_queue_full:
+  drop
+  metric: mirror_queue_depth
+end note
+
+@enduml
