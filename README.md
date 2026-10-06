@@ -9,7 +9,7 @@ An L7 HTTP reverse proxy in Go: routing, hot-reloadable config, and traffic mirr
 - Forwarding via `net/http/httputil.ReverseProxy` - hop-by-hop headers stripped, `X-Forwarded-*` set
 - Configurable transport and server timeouts
 - Graceful shutdown on `SIGTERM`
-- Non-blocking traffic mirroring (**in progress**, #1)
+- Non-blocking traffic mirroring (**in progress**, [Issue #1](https://github.com/unisom0rphic/l7_proxy/issues/1))
 - Prometheus metrics: requests, latency, failed config reloads
 
 ## Requirements
