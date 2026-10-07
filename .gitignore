@@ -1,6 +1,7 @@
 /bin
 *.log
-config.*
+config.yaml
+config_*
 !config_example.yaml
 bench-*/
 cmd/proxy/proxy

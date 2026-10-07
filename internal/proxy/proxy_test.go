@@ -1,4 +1,4 @@
-package main
+package proxy_test
 
 import (
 	"errors"
@@ -44,6 +44,15 @@ routes:
   - rules: { path_prefix: /dead }
     upstream: dead
 */
+
+// local copy; the one in package main is not visible from here.
+func getenv(key string, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+
+	return def
+}
 
 var (
 	proxyBase    = getenv("PROXY_ADDR", "http://localhost:8080")

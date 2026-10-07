@@ -7,22 +7,28 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/unisom0rphic/l7proxy/internal/config"
+	"github.com/unisom0rphic/l7proxy/internal/metrics"
 )
 
 type Router struct {
+	// nameToHost should be a part of config (also solves the "double build" problem)
+	// Then we can just swap pointers atomically
 	nameToHost   map[string]*url.URL
 	configPath   string
 	atomicConfig atomic.Pointer[config.Config]
-	nameHostLock sync.RWMutex
+	nameHostLock sync.RWMutex // temporary measure
 }
 
 // Decides which API route to use for a given http.Request
@@ -39,6 +45,16 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 
 	// Path: if found exact match - return immediately
 	for _, route := range router.Config().Routes {
+		rewrite := route.Rule.Rewrite
+
+		// If rewrite field is empty - use path/prefix itself
+		if rewrite == "" {
+			if route.Rule.Path != "" {
+				rewrite = route.Rule.Path
+			} else {
+				rewrite = route.Rule.PathPrefix
+			}
+		}
 		routePath := route.Rule.Path
 		if routePath == path {
 			name := route.Upstream
@@ -67,7 +83,7 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 			url := &url.URL{
 				Scheme:   host.Scheme,
 				Host:     host.Host,
-				Path:     path,
+				Path:     rewrite,
 				RawQuery: r.URL.RawQuery,
 			}
 			return url, nil
@@ -229,14 +245,36 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 			<-configCooldown.C
 		}
 		defer configCooldown.Stop()
-
 		onCoolDown := false
+
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGHUP)
+		slog.Info("subscribed to SIGHUP")
+		defer signal.Stop(sigCh)
 
 		for {
 			select {
 			case <-ctx.Done():
+				// TODO: graceful shutdown
 				slog.Info("monitor shutting down due to context cancellation")
 				return
+
+			case <-sigCh:
+				// SIGHUP will be intercepted if using `go run .`,
+				// this execution path is only accessible from the compiled binary
+				if onCoolDown {
+					continue
+				}
+				slog.Info("SIGHUP received, reloading")
+				// TODO: read/validate HERE to not block main
+				err = router.updateConfig()
+				if err != nil {
+					slog.Error("error updating config", "error", err)
+					metrics.ConfigReloadErrorsTotal.WithLabelValues("parse").Inc()
+				}
+				onCoolDown = true
+				configCooldown.Reset(1 * time.Second)
+
 			case event, ok := <-watcher.Events:
 				if !ok {
 					return
@@ -257,11 +295,16 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 					}
 					slog.Info("config modified", "file", event.Name)
 					// TODO: read/validate HERE to not block main
-					router.updateConfig()
+					err = router.updateConfig()
+					if err != nil {
+						slog.Error("error updating config", "error", err)
+						metrics.ConfigReloadErrorsTotal.WithLabelValues("parse").Inc()
+					}
 					onCoolDown = true
 					configCooldown.Reset(1 * time.Second)
 				} else if event.Has(fsnotify.Remove) {
-					panic(fmt.Sprintf("Config deleted: %s", event.Name))
+					slog.Error("Config deleted", "path", router.configPath, "event", event.Name)
+					metrics.ConfigReloadErrorsTotal.WithLabelValues("remove").Inc()
 				}
 			case <-configCooldown.C:
 				onCoolDown = false
@@ -284,7 +327,7 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 	return nil
 }
 
-// Used to apply changes in router.configPath
+// Used to apply changes in router`s config file
 func (router *Router) updateConfig() error {
 	cfg, err := config.ParseConfig(router.configPath)
 	if err != nil {

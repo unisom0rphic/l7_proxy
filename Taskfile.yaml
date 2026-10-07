@@ -20,7 +20,7 @@ tasks:
 
   test:
     desc: Run tests
-    cmd: CONFIG_PATH={{.CONFIG_TEST}} go test ./cmd/... ./internal/...
+    cmd: CONFIG_PATH={{.CONFIG_TEST}} go test ./cmd/... ./internal/... -count=1 -v
 
   up:
     desc: Start all containers in docker
