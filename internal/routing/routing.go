@@ -29,7 +29,10 @@ type Router struct {
 	configPath   string
 	atomicConfig atomic.Pointer[config.Config]
 	nameHostLock sync.RWMutex // temporary measure
+	wg           sync.WaitGroup
 }
+
+func (r *Router) Wait() { r.wg.Wait() }
 
 // Decides which API route to use for a given http.Request
 func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
@@ -235,9 +238,11 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 	}
 
 	parentDir := filepath.Dir(absTarget)
+	router.wg.Add(1)
 
 	// Listener loop
 	go func() {
+		defer router.wg.Done()
 		defer watcher.Close()
 
 		configCooldown := time.NewTimer(0)
@@ -255,7 +260,6 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 		for {
 			select {
 			case <-ctx.Done():
-				// TODO: graceful shutdown
 				slog.Info("monitor shutting down due to context cancellation")
 				return
 

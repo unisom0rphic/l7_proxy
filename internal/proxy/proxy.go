@@ -195,6 +195,14 @@ func (p *L7Proxy) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		slog.Info("Shutdown signal received")
+		done := make(chan struct{})
+		go func() { p.router.Wait(); close(done) }()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			slog.Warn("waiting for goroutines timed out")
+		}
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -204,7 +212,6 @@ func (p *L7Proxy) Run(ctx context.Context) error {
 			return fmt.Errorf("shutdown: %w", err)
 		}
 
-		// clean up will be here
 		slog.Info("Server stopped")
 
 		return nil
