@@ -13,6 +13,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/unisom0rphic/l7proxy/internal/metrics"
+	"github.com/unisom0rphic/l7proxy/internal/mirroring"
 	"github.com/unisom0rphic/l7proxy/internal/proxy"
 	"github.com/unisom0rphic/l7proxy/internal/routing"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -54,17 +55,18 @@ func main() {
 
 	configPath := getenv("CONFIG_PATH", "config.yaml")
 	proxyRouter, err := routing.CreateFromConfig(ctx, configPath)
-
 	if err != nil {
 		slog.Error("Unable to create router", "error", err)
 		panic("Incorrect router configuration, unable to start the server")
 	}
+
+	proxyMirror := mirroring.NewModule(10, 100)
 
 	prometheus.MustRegister(metrics.HTTPRequestsTotal)
 	prometheus.MustRegister(metrics.HTTPRequestDuration)
 	prometheus.MustRegister(metrics.ConfigReloadErrorsTotal)
 
 	port := getenv("PORT", "8080")
-	p := proxy.New(proxyRouter, port, metrics.Default)
+	p := proxy.New(proxyRouter, port, metrics.Default, proxyMirror)
 	p.Run(ctx)
 }

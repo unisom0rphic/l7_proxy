@@ -10,20 +10,22 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/unisom0rphic/l7proxy/internal/metrics"
+	"github.com/unisom0rphic/l7proxy/internal/mirroring"
 	"github.com/unisom0rphic/l7proxy/internal/routing"
 )
 
 type L7Proxy struct {
-	mirrorQueue chan ([]byte)
-	rp          *httputil.ReverseProxy
-	router      *routing.Router
-	server      *http.Server
-	mux         *http.ServeMux
-	metrics     *metrics.RequestMetrics
+	mirrorModule *mirroring.MirrorModule
+	rp           *httputil.ReverseProxy
+	router       *routing.Router
+	server       *http.Server
+	mux          *http.ServeMux
+	metrics      *metrics.RequestMetrics
 }
 
 type responseWriter struct {
@@ -82,23 +84,21 @@ func (p *L7Proxy) rewrite(pr *httputil.ProxyRequest) {
 		return
 	}
 
-	if pr.In.Body != nil && pr.In.Body != http.NoBody && pr.In.ContentLength != 0 {
-		body, err := io.ReadAll(pr.In.Body)
-		pr.Out.Body = io.NopCloser(bytes.NewReader(body))
+	// if pr.In.Body != nil && pr.In.Body != http.NoBody && pr.In.ContentLength != 0 {
+	body, err := io.ReadAll(pr.In.Body)
+	pr.Out.Body = io.NopCloser(bytes.NewReader(body))
 
-		if err != nil {
-			slog.Warn("Unable to read request body", "body_len", len(body), "error", err)
-		} else {
-			// Copy not required until a sync.Pool is introduced
-			// bufCopy := make([]byte, len(body))
-			// copy(bufCopy, body)
+	// FIXME: mirrors list instead of just resending the same request
+	job := mirroring.NewJob(pr.In.Method, body, pr.In.Header.Clone(), []*url.URL{route})
 
-			select {
-			case p.mirrorQueue <- body:
-			default:
-				slog.Warn("Buffer overflow")
-			}
-		}
+	// TODO: error.As(err, &maxErr) in switch
+	if err != nil {
+		slog.Warn("Unable to read request body", "body_len", len(body), "error", err)
+	} else {
+		// Copy not required until a sync.Pool is introduced
+		// bufCopy := make([]byte, len(body))
+		// copy(bufCopy, body)
+		p.mirrorModule.TrySubmit(*job)
 	}
 
 	slog.Debug("Router decision", "route", route)
@@ -152,13 +152,13 @@ func (p *L7Proxy) buildTransport() *http.Transport {
 	}
 }
 
-func New(r *routing.Router, port string, m *metrics.RequestMetrics) *L7Proxy {
+func New(r *routing.Router, port string, m *metrics.RequestMetrics, mm *mirroring.MirrorModule) *L7Proxy {
 	slog.Debug("CONFIG", "config", r.Config())
 
 	proxy := &L7Proxy{
-		router:      r,
-		mirrorQueue: make(chan []byte, 100),
-		metrics:     m,
+		router:       r,
+		metrics:      m,
+		mirrorModule: mm,
 	}
 
 	proxy.rp = &httputil.ReverseProxy{
@@ -195,14 +195,6 @@ func (p *L7Proxy) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		slog.Info("Shutdown signal received")
-		done := make(chan struct{})
-		go func() { p.router.Wait(); close(done) }()
-
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			slog.Warn("waiting for goroutines timed out")
-		}
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -210,6 +202,15 @@ func (p *L7Proxy) Run(ctx context.Context) error {
 		if err := p.server.Shutdown(shutdownCtx); err != nil {
 			slog.Error("Shutdown failed", "error", err)
 			return fmt.Errorf("shutdown: %w", err)
+		}
+
+		done := make(chan struct{})
+		go func() { p.router.Wait(); p.mirrorModule.Stop(); close(done) }()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			slog.Warn("waiting for mirror module shutdown timed out")
 		}
 
 		slog.Info("Server stopped")
