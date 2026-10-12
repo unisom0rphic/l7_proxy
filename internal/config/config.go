@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -53,13 +54,35 @@ type Config struct {
 		Transport TransportTimeouts `yaml:"transport"`
 		Server    ServerTimeoutes   `yaml:"server"`
 	} `yaml:"net_timeouts_s"`
-	Upstreams []Upstream `yaml:"upstreams"`
-	Routes    []Route    `yaml:"routes"`
+	Upstreams  []Upstream          `yaml:"upstreams"`
+	Routes     []Route             `yaml:"routes"`
+	NameToHost map[string]*url.URL `yaml:"-"`
 }
 
 var httpMethods = map[string]struct{}{
 	"GET": {}, "POST": {}, "PUT": {}, "PATCH": {},
 	"DELETE": {}, "HEAD": {}, "OPTIONS": {}, "CONNECT": {}, "TRACE": {},
+}
+
+// Maps upstream names to their hosts (e.g users-prod -> http://users-prod:3001)
+func (cfg *Config) mapNamesToHosts() error {
+	nameToHost := make(map[string]*url.URL)
+	for _, upstream := range cfg.Upstreams {
+		name := upstream.Name
+		host := upstream.Host
+
+		url, err := url.Parse(host)
+		if !slices.Contains([]string{"http", "https"}, url.Scheme) || url.Scheme == "" {
+			return fmt.Errorf("Error parsing config url for %s: incorrect scheme: %s", name, host)
+		}
+		if err != nil {
+			return fmt.Errorf("error mapping upstream %s to host %s, %w", name, host, err)
+		}
+		nameToHost[name] = url
+	}
+	cfg.NameToHost = nameToHost
+
+	return nil
 }
 
 // Validate returns all semantic errors in cfg. Empty slice means valid.
@@ -421,6 +444,10 @@ func ParseConfig(configPath string) (*Config, error) {
 	err = yaml.Unmarshal(yamlFile, &config)
 	if err != nil {
 		return nil, fmt.Errorf("failed yaml umarshal (%s): %v\n", configPath, err)
+	}
+	err = config.mapNamesToHosts()
+	if err != nil {
+		return nil, fmt.Errorf("building name->host map failed (%s): %v\n", configPath, err)
 	}
 
 	return &config, nil
