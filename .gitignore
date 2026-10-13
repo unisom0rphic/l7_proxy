@@ -5,3 +5,4 @@ config_*
 !config_example.yaml
 bench-*/
 cmd/proxy/proxy
+coverage.out

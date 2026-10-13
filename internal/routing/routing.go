@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,12 +22,8 @@ import (
 )
 
 type Router struct {
-	// nameToHost should be a part of config (also solves the "double build" problem)
-	// Then we can just swap pointers atomically
-	nameToHost   map[string]*url.URL
 	configPath   string
 	atomicConfig atomic.Pointer[config.Config]
-	nameHostLock sync.RWMutex // temporary measure
 	wg           sync.WaitGroup
 }
 
@@ -61,7 +56,7 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 		routePath := route.Rule.Path
 		if routePath == path {
 			name := route.Upstream
-			host, ok := router.nameToHost[name]
+			host, ok := router.Config().NameToHost[name]
 
 			if !ok {
 				slog.Debug("decidePath: route not found")
@@ -114,9 +109,7 @@ func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
 		if strings.HasPrefix(path, prefix) {
 			slog.Debug("found prefix", "prefix", prefix, "path", path)
 			upstreamService := route.Upstream
-			router.nameHostLock.RLock()
-			host, ok := router.nameToHost[upstreamService]
-			router.nameHostLock.RUnlock()
+			host, ok := router.Config().NameToHost[upstreamService]
 
 			if !ok {
 				// If we reach this branch it means the config was incorrectly parsed,
@@ -193,34 +186,9 @@ func CreateFromConfig(ctx context.Context, configPath string) (*Router, error) {
 	return router, nil
 }
 
-// Maps upstream names to their hosts (e.g users-prod -> http://users-prod:3001)
-func mapNamesToHosts(cfg *config.Config) (map[string]*url.URL, error) {
-	nameToHost := make(map[string]*url.URL)
-	for _, upstream := range cfg.Upstreams {
-		name := upstream.Name
-		host := upstream.Host
-
-		url, err := url.Parse(host)
-		if !slices.Contains([]string{"http", "https"}, url.Scheme) || url.Scheme == "" {
-			return nil, fmt.Errorf("Error parsing config url for %s: incorrect scheme: %s", name, host)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("error mapping upstream %s to host %s, %w", name, host, err)
-		}
-		nameToHost[name] = url
-	}
-
-	return nameToHost, nil
-}
-
 func NewRouter(cfg *config.Config) (*Router, error) {
 	router := &Router{}
 	router.swapConfig(cfg)
-	nameToHost, err := mapNamesToHosts(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("creating new router failed during upstream->host mapping: %w", err)
-	}
-	router.nameToHost = nameToHost
 	return router, nil
 }
 
@@ -238,11 +206,9 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 	}
 
 	parentDir := filepath.Dir(absTarget)
-	router.wg.Add(1)
 
 	// Listener loop
-	go func() {
-		defer router.wg.Done()
+	router.wg.Go(func() {
 		defer watcher.Close()
 
 		configCooldown := time.NewTimer(0)
@@ -270,7 +236,6 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 					continue
 				}
 				slog.Info("SIGHUP received, reloading")
-				// TODO: read/validate HERE to not block main
 				err = router.updateConfig()
 				if err != nil {
 					slog.Error("error updating config", "error", err)
@@ -298,7 +263,6 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 						continue
 					}
 					slog.Info("config modified", "file", event.Name)
-					// TODO: read/validate HERE to not block main
 					err = router.updateConfig()
 					if err != nil {
 						slog.Error("error updating config", "error", err)
@@ -320,7 +284,7 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 			}
 
 		}
-	}()
+	})
 
 	err = watcher.Add(parentDir)
 	if err != nil {
@@ -347,14 +311,6 @@ func (router *Router) updateConfig() error {
 	}
 
 	router.swapConfig(cfg)
-
-	nameToHost, err := mapNamesToHosts(cfg)
-	if err != nil {
-		return fmt.Errorf("updating router config failed during upstream->host mapping: %w", err)
-	}
-	router.nameHostLock.Lock()
-	router.nameToHost = nameToHost
-	router.nameHostLock.Unlock()
 	return nil
 }
 

@@ -13,7 +13,21 @@ import (
 )
 
 func testConfig(upstreams []config.Upstream, routes []config.Route) *config.Config {
-	return &config.Config{Upstreams: upstreams, Routes: routes}
+	cfg := &config.Config{
+		Upstreams: upstreams,
+		Routes:    routes,
+	}
+
+	cfg.NameToHost = make(map[string]*url.URL, len(upstreams))
+	for _, up := range upstreams {
+		u, err := url.Parse(up.Host)
+		if err != nil {
+			panic("bad upstream host " + up.Host + ": " + err.Error())
+		}
+		cfg.NameToHost[up.Name] = u
+	}
+
+	return cfg
 }
 
 func upstream(name, host string) config.Upstream {
