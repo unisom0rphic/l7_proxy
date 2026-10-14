@@ -3,9 +3,9 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -14,46 +14,77 @@ import (
 
 type TransportTimeouts struct {
 	TCP            int `yaml:"tcp"`
-	KeepAlive      int `yaml:"keep_alive"`
+	KeepAlive      int `yaml:"keep-alive"`
 	TLS            int `yaml:"tls"`
-	ResponseHeader int `yaml:"response_header"`
-	IdleConn       int `yaml:"idle_conn"`
+	ResponseHeader int `yaml:"response-header"`
+	IdleConn       int `yaml:"idle-conn"`
 }
 
 type ServerTimeoutes struct {
 	Context    int `yaml:"context"`
-	ReadHeader int `yaml:"read_header"`
+	ReadHeader int `yaml:"read-header"`
 	Idle       int `yaml:"idle"`
 }
 
 type Upstream struct {
 	Name    string `yaml:"name"`
 	Host    string `yaml:"host"`
-	Timeout int    `yaml:"timeout_ms"`
+	Timeout int    `yaml:"timeout-ms"`
+}
+
+type HeaderOp string
+
+const (
+	HeaderPresent  HeaderOp = "present"
+	HeaderEquals   HeaderOp = "equals"
+	HeaderPrefix   HeaderOp = "prefix"
+	HeaderContains HeaderOp = "contains"
+)
+
+type HeaderMatch struct {
+	Name  string   `yaml:"name"`
+	Value string   `yaml:"value,omitempty"`
+	Op    HeaderOp `yaml:"op,omitempty"`
+}
+
+// EffectiveOp resolves the shorthand: empty Op + empty Value = present,
+// empty Op + Value set = equals, explicit Op wins.
+func (h HeaderMatch) EffectiveOp() HeaderOp {
+	if h.Op != "" {
+		return h.Op
+	}
+	if h.Value == "" {
+		return HeaderPresent
+	}
+	return HeaderEquals
 }
 
 type Rule struct {
-	PathPrefix string `yaml:"path_prefix"`
-	Header     string `yaml:"header"`
-	Path       string `yaml:"path"`
-	Rewrite    string `yaml:"rewrite"`
-	Method     string `yaml:"method"`
+	PathPrefix  string        `yaml:"path-prefix"`
+	Path        string        `yaml:"path"`
+	Rewrite     string        `yaml:"rewrite"`
+	Method      string        `yaml:"method"`
+	Headers     []HeaderMatch `yaml:"headers,omitempty"`
+	Hosts       []string      `yaml:"hosts,omitempty"`
+	ClientCIDRs []string      `yaml:"client-cidrs,omitempty"`
+}
+
+type Mirror struct {
+	Upstream string  `yaml:"upstream"`
+	Ratio    float64 `yaml:"ratio"`
 }
 
 type Route struct {
-	Rule     Rule   `yaml:"rules"`
-	Upstream string `yaml:"upstream"`
-	Mirror   struct {
-		Upstream string  `yaml:"upstream"`
-		Ratio    float64 `yaml:"ratio"`
-	} `yaml:"mirror"`
+	Rule     Rule     `yaml:"rules"`
+	Upstream string   `yaml:"upstream"`
+	Mirrors  []Mirror `yaml:"mirrors"`
 }
 
 type Config struct {
 	NetworkTimeoutsSec struct {
 		Transport TransportTimeouts `yaml:"transport"`
 		Server    ServerTimeoutes   `yaml:"server"`
-	} `yaml:"net_timeouts_s"`
+	} `yaml:"net-timeouts-s"`
 	Upstreams  []Upstream          `yaml:"upstreams"`
 	Routes     []Route             `yaml:"routes"`
 	NameToHost map[string]*url.URL `yaml:"-"`
@@ -71,14 +102,14 @@ func (cfg *Config) mapNamesToHosts() error {
 		name := upstream.Name
 		host := upstream.Host
 
-		url, err := url.Parse(host)
-		if !slices.Contains([]string{"http", "https"}, url.Scheme) || url.Scheme == "" {
-			return fmt.Errorf("Error parsing config url for %s: incorrect scheme: %s", name, host)
-		}
+		u, err := url.Parse(host)
 		if err != nil {
 			return fmt.Errorf("error mapping upstream %s to host %s, %w", name, host, err)
 		}
-		nameToHost[name] = url
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("error parsing config url for %s: incorrect scheme: %s", name, host)
+		}
+		nameToHost[name] = u
 	}
 	cfg.NameToHost = nameToHost
 
@@ -123,7 +154,7 @@ func validateUpstreams(upstreams []Upstream) []error {
 		}
 
 		if u.Timeout < 0 {
-			errs = append(errs, fmt.Errorf("upstreams[%d] (%s): timeout_ms must be >= 0, got %d", i, u.Name, u.Timeout))
+			errs = append(errs, fmt.Errorf("upstreams[%d] (%s): timeout-ms must be >= 0, got %d", i, u.Name, u.Timeout))
 		}
 	}
 	return errs
@@ -206,21 +237,21 @@ func validateRule(i int, r Rule) []error {
 	var errs []error
 
 	if r.Path != "" && r.PathPrefix != "" {
-		errs = append(errs, fmt.Errorf("routes[%d]: both path and path_prefix are set", i))
+		errs = append(errs, fmt.Errorf("routes[%d]: both path and path-prefix are set", i))
 	}
 	if r.Path == "" && r.PathPrefix == "" {
-		errs = append(errs, fmt.Errorf("routes[%d]: both path and path_prefix are empty", i))
+		errs = append(errs, fmt.Errorf("routes[%d]: both path and path-prefix are empty", i))
 	}
 	if err := validatePathLike(i, "path", r.Path); err != nil {
 		errs = append(errs, err)
 	}
-	if err := validatePathLike(i, "path_prefix", r.PathPrefix); err != nil {
+	if err := validatePathLike(i, "path-prefix", r.PathPrefix); err != nil {
 		errs = append(errs, err)
 	}
 
 	if r.Rewrite != "" {
 		if r.Path == "" && r.PathPrefix == "" {
-			errs = append(errs, fmt.Errorf("routes[%d]: rewrite requires path or path_prefix", i))
+			errs = append(errs, fmt.Errorf("routes[%d]: rewrite requires path or path-prefix", i))
 		}
 		if err := validateRewrite(i, r.Rewrite); err != nil {
 			errs = append(errs, err)
@@ -236,10 +267,87 @@ func validateRule(i int, r Rule) []error {
 		}
 	}
 
-	if r.Header != "" && !isValidHeaderName(r.Header) {
-		errs = append(errs, fmt.Errorf("routes[%d]: invalid header name %q", i, r.Header))
-	}
+	errs = append(errs, validateHeaders(i, r.Headers)...)
+	errs = append(errs, validateHosts(i, r.Hosts)...)
+	errs = append(errs, validateClientCIDRs(i, r.ClientCIDRs)...)
 
+	return errs
+}
+
+func validateHeaders(i int, hs []HeaderMatch) []error {
+	var errs []error
+	seen := make(map[string]int, len(hs))
+	for j, h := range hs {
+		if !isValidHeaderName(h.Name) {
+			errs = append(errs, fmt.Errorf("routes[%d].headers[%d]: invalid header name %q", i, j, h.Name))
+			continue
+		}
+
+		key := strings.ToLower(h.Name)
+		if prev, dup := seen[key]; dup {
+			// One rule = AND across headers. Duplicate names make the intent
+			// ambiguous (OR? AND with two values?), so reject them.
+			errs = append(errs, fmt.Errorf("routes[%d].headers[%d]: duplicate header %q (also at [%d])", i, j, h.Name, prev))
+			continue
+		}
+		seen[key] = j
+
+		switch h.EffectiveOp() {
+		case HeaderPresent:
+			if h.Value != "" {
+				errs = append(errs, fmt.Errorf("routes[%d].headers[%d]: op=present must not set value", i, j))
+			}
+		case HeaderEquals, HeaderPrefix, HeaderContains:
+			if h.Value == "" {
+				errs = append(errs, fmt.Errorf("routes[%d].headers[%d]: op=%s requires value", i, j, h.EffectiveOp()))
+			}
+		default:
+			errs = append(errs, fmt.Errorf("routes[%d].headers[%d]: unknown op %q", i, j, h.Op))
+		}
+	}
+	return errs
+}
+
+func validateHosts(i int, hosts []string) []error {
+	var errs []error
+	for j, h := range hosts {
+		if err := validateHostPattern(h); err != nil {
+			errs = append(errs, fmt.Errorf("routes[%d].hosts[%d]: %w", i, j, err))
+		}
+	}
+	return errs
+}
+
+func validateHostPattern(h string) error {
+	if h == "" {
+		return errors.New("host is empty")
+	}
+	if strings.ContainsAny(h, " \t\n\r") {
+		return fmt.Errorf("host %q contains whitespace", h)
+	}
+	if strings.ContainsAny(h, "/?#") {
+		return fmt.Errorf("host %q must not contain /, ?, or #", h)
+	}
+	if strings.Contains(h, ":") {
+		// r.Host can carry a port, but matching becomes ambiguous with wildcards.
+		// Reject ports here and let the router compare against r.Host as-is.
+		return fmt.Errorf("host %q must not contain a port", h)
+	}
+	if strings.Contains(h, "*") {
+		if !strings.HasPrefix(h, "*.") || strings.Count(h, "*") != 1 {
+			return fmt.Errorf("host %q: only a single leading wildcard (*.example.com) is supported", h)
+		}
+	}
+	return nil
+}
+
+func validateClientCIDRs(i int, cidrs []string) []error {
+	var errs []error
+	for j, c := range cidrs {
+		if _, _, err := net.ParseCIDR(c); err != nil {
+			errs = append(errs, fmt.Errorf("routes[%d].client-cidrs[%d]: %w", i, j, err))
+		}
+	}
 	return errs
 }
 
@@ -271,27 +379,53 @@ func validateRewrite(i int, v string) error {
 
 func validateMirror(i int, r Route, names map[string]struct{}) []error {
 	var errs []error
-	if r.Mirror.Upstream == "" {
-		if r.Mirror.Ratio != 0 {
-			errs = append(errs, fmt.Errorf("routes[%d]: mirror ratio set but mirror upstream is empty", i))
+	for _, mirror := range r.Mirrors {
+		if mirror.Upstream == "" {
+			if mirror.Ratio != 0 {
+				errs = append(errs, fmt.Errorf("routes[%d]: mirror ratio set but mirror upstream is empty", i))
+			}
+			continue
 		}
-		return errs
+
+		if _, ok := names[mirror.Upstream]; !ok {
+			errs = append(errs, fmt.Errorf("routes[%d]: mirror points to unknown upstream %q", i, mirror.Upstream))
+		}
+		if mirror.Upstream == r.Upstream {
+			errs = append(errs, fmt.Errorf("routes[%d]: mirror references own upstream %q", i, r.Upstream))
+		}
+		if mirror.Ratio < 0 || mirror.Ratio > 1 {
+			errs = append(errs, fmt.Errorf("routes[%d]: mirror ratio %v out of [0,1]", i, mirror.Ratio))
+		}
 	}
 
-	if _, ok := names[r.Mirror.Upstream]; !ok {
-		errs = append(errs, fmt.Errorf("routes[%d]: mirror points to unknown upstream %q", i, r.Mirror.Upstream))
-	}
-	if r.Mirror.Upstream == r.Upstream {
-		errs = append(errs, fmt.Errorf("routes[%d]: mirror references own upstream %q", i, r.Upstream))
-	}
-	if r.Mirror.Ratio < 0 || r.Mirror.Ratio > 1 {
-		errs = append(errs, fmt.Errorf("routes[%d]: mirror ratio %v out of [0,1]", i, r.Mirror.Ratio))
-	}
 	return errs
 }
 
 func dedupKey(r Rule) string {
-	return strings.ToUpper(r.Method) + "|" + r.Path + "|" + r.PathPrefix + "|" + r.Header
+	var b strings.Builder
+	b.WriteString(strings.ToUpper(r.Method))
+	b.WriteByte('|')
+	b.WriteString(r.Path)
+	b.WriteByte('|')
+	b.WriteString(r.PathPrefix)
+
+	for _, h := range r.Headers {
+		b.WriteByte('|')
+		b.WriteString(strings.ToLower(h.Name))
+		b.WriteByte('=')
+		b.WriteString(string(h.EffectiveOp()))
+		b.WriteByte(':')
+		b.WriteString(h.Value)
+	}
+	for _, h := range r.Hosts {
+		b.WriteByte('|')
+		b.WriteString(strings.ToLower(h))
+	}
+	for _, c := range r.ClientCIDRs {
+		b.WriteByte('|')
+		b.WriteString(c)
+	}
+	return b.String()
 }
 
 func isValidHeaderName(s string) bool {
@@ -327,28 +461,28 @@ func validateTimeouts(cfg *Config) []error {
 	s := cfg.NetworkTimeoutsSec.Server
 
 	if t.TCP < 0 {
-		errs = append(errs, fmt.Errorf("net_timeouts_s.transport.tcp must be >= 0, got %d", t.TCP))
+		errs = append(errs, fmt.Errorf("net-timeouts-s.transport.tcp must be >= 0, got %d", t.TCP))
 	}
 	if t.KeepAlive < 0 {
-		errs = append(errs, fmt.Errorf("net_timeouts_s.transport.keep_alive must be >= 0, got %d", t.KeepAlive))
+		errs = append(errs, fmt.Errorf("net-timeouts-s.transport.keep-alive must be >= 0, got %d", t.KeepAlive))
 	}
 	if t.TLS < 0 {
-		errs = append(errs, fmt.Errorf("net_timeouts_s.transport.tls must be >= 0, got %d", t.TLS))
+		errs = append(errs, fmt.Errorf("net-timeouts-s.transport.tls must be >= 0, got %d", t.TLS))
 	}
 	if t.ResponseHeader < 0 {
-		errs = append(errs, fmt.Errorf("net_timeouts_s.transport.response_header must be >= 0, got %d", t.ResponseHeader))
+		errs = append(errs, fmt.Errorf("net-timeouts-s.transport.response-header must be >= 0, got %d", t.ResponseHeader))
 	}
 	if t.IdleConn < 0 {
-		errs = append(errs, fmt.Errorf("net_timeouts_s.transport.idle_conn must be >= 0, got %d", t.IdleConn))
+		errs = append(errs, fmt.Errorf("net-timeouts-s.transport.idle-conn must be >= 0, got %d", t.IdleConn))
 	}
 	if s.Context < 0 {
-		errs = append(errs, fmt.Errorf("net_timeouts_s.server.context must be >= 0, got %d", s.Context))
+		errs = append(errs, fmt.Errorf("net-timeouts-s.server.context must be >= 0, got %d", s.Context))
 	}
 	if s.ReadHeader < 0 {
-		errs = append(errs, fmt.Errorf("net_timeouts_s.server.read_header must be >= 0, got %d", s.ReadHeader))
+		errs = append(errs, fmt.Errorf("net-timeouts-s.server.read-header must be >= 0, got %d", s.ReadHeader))
 	}
 	if s.Idle < 0 {
-		errs = append(errs, fmt.Errorf("net_timeouts_s.server.idle must be >= 0, got %d", s.Idle))
+		errs = append(errs, fmt.Errorf("net-timeouts-s.server.idle must be >= 0, got %d", s.Idle))
 	}
 	return errs
 }
@@ -362,22 +496,24 @@ func validateMirrorCycles(cfg *Config) []error {
 	adj := make(map[string][]string, len(cfg.Upstreams))
 	seen := make(map[[2]string]struct{})
 	for _, r := range cfg.Routes {
-		m := r.Mirror.Upstream
-		if m == "" || m == r.Upstream {
-			continue
+		for _, mirror := range r.Mirrors {
+			m := mirror.Upstream
+			if m == "" || m == r.Upstream {
+				continue
+			}
+			if _, ok := names[r.Upstream]; !ok {
+				continue
+			}
+			if _, ok := names[m]; !ok {
+				continue
+			}
+			key := [2]string{r.Upstream, m}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			adj[r.Upstream] = append(adj[r.Upstream], m)
 		}
-		if _, ok := names[r.Upstream]; !ok {
-			continue
-		}
-		if _, ok := names[m]; !ok {
-			continue
-		}
-		key := [2]string{r.Upstream, m}
-		if _, dup := seen[key]; dup {
-			continue
-		}
-		seen[key] = struct{}{}
-		adj[r.Upstream] = append(adj[r.Upstream], m)
 	}
 
 	cycle := findCycle(adj)

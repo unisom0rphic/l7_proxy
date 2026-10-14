@@ -1,37 +1,45 @@
-net_timeouts_s:
+net-timeouts-s:
   transport:
-    tcp: 10
-    keep_alive: 30
-    tls: 10
-    response_header: 10
-    idle_conn: 120
+    tcp: 5
+    keep-alive: 30
+    tls: 5
+    response-header: 10
+    idle-conn: 90
   server:
-    context: 5
-    read_header: 15
-    idle: 15
-  
+    context: 30
+    read-header: 5
+    idle: 60
 
 upstreams:
   - name: users-prod
     host: http://users-prod:3001
-    timeout_ms: 2000 
+    timeout-ms: 500
   - name: users-test
     host: http://users-test:3002
-    timeout_ms: 2000 
+    timeout-ms: 500
   - name: orders
     host: http://orders:3003
-    timeout_ms: 2000 
+    timeout-ms: 500
 
 routes:
   - rules:
       path: /api/users
     upstream: users-prod
-    mirror:
-      upstream: users-test
-      ratio: 0.2
+    mirrors:
+      - upstream: users-test
+        ratio: 0.2
 
   - rules:
       path-prefix: /orders
       rewrite: /api/orders
       method: GET
     upstream: orders
+
+  - rules:
+      path-prefix: /admin
+      headers:
+        - name: X-Admin-Token
+          op: present
+      client-cidrs:
+        - 172.16.0.0/12  # docker default address pool range
+    upstream: users-prod

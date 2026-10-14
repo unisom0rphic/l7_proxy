@@ -32,14 +32,13 @@ func validConfig() *Config {
 		},
 		Routes: []Route{
 			{Rule: Rule{PathPrefix: "/api"}, Upstream: "a"},
-			{Rule: Rule{PathPrefix: "/api/v2", Method: "POST", Header: "X-Req-Source"}, Upstream: "b"},
+			{Rule: Rule{PathPrefix: "/api/v2", Method: "POST", Headers: []HeaderMatch{{Name: "X-Req-Source", Op: HeaderPresent}}}, Upstream: "b"},
 		},
 	}
 }
 
 func withMirror(cfg *Config, route int, upstream string, ratio float64) *Config {
-	cfg.Routes[route].Mirror.Upstream = upstream
-	cfg.Routes[route].Mirror.Ratio = ratio
+	cfg.Routes[route].Mirrors = []Mirror{{Upstream: upstream, Ratio: ratio}}
 	return cfg
 }
 
@@ -225,9 +224,13 @@ func TestValidate_RejectsBadRule(t *testing.T) {
 		{"method not in HTTP methods",
 			func(c *Config) { c.Routes[0].Rule.Method = "FOO" }},
 		{"header with space",
-			func(c *Config) { c.Routes[0].Rule.Header = "X Req Source" }},
+			func(c *Config) {
+				c.Routes[0].Rule.Headers = []HeaderMatch{{Name: "X Req Source"}}
+			}},
 		{"header with colon",
-			func(c *Config) { c.Routes[0].Rule.Header = "X-Bad:Header" }},
+			func(c *Config) {
+				c.Routes[0].Rule.Headers = []HeaderMatch{{Name: "X-Bad:Header"}}
+			}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -336,10 +339,10 @@ func TestValidate_RejectsLongCycle(t *testing.T) {
 		Route{Rule: Rule{PathPrefix: "/c"}, Upstream: "c"},
 		Route{Rule: Rule{PathPrefix: "/d"}, Upstream: "d"},
 	)
-	cfg.Routes[0].Mirror.Upstream, cfg.Routes[0].Mirror.Ratio = "b", 1.0
-	cfg.Routes[1].Mirror.Upstream, cfg.Routes[1].Mirror.Ratio = "c", 1.0
-	cfg.Routes[2].Mirror.Upstream, cfg.Routes[2].Mirror.Ratio = "d", 1.0
-	cfg.Routes[3].Mirror.Upstream, cfg.Routes[3].Mirror.Ratio = "a", 1.0
+	cfg.Routes[0].Mirrors = []Mirror{{Upstream: "b", Ratio: 1.0}}
+	cfg.Routes[1].Mirrors = []Mirror{{Upstream: "c", Ratio: 1.0}}
+	cfg.Routes[2].Mirrors = []Mirror{{Upstream: "d", Ratio: 1.0}}
+	cfg.Routes[3].Mirrors = []Mirror{{Upstream: "a", Ratio: 1.0}}
 	wantErr(t, cfg)
 }
 
@@ -354,8 +357,8 @@ func TestValidate_RejectsDisconnectedCycle(t *testing.T) {
 		Route{Rule: Rule{PathPrefix: "/c"}, Upstream: "c"},
 		Route{Rule: Rule{PathPrefix: "/d"}, Upstream: "d"},
 	)
-	cfg.Routes[2].Mirror.Upstream, cfg.Routes[2].Mirror.Ratio = "d", 1.0
-	cfg.Routes[3].Mirror.Upstream, cfg.Routes[3].Mirror.Ratio = "c", 1.0
+	cfg.Routes[2].Mirrors = []Mirror{{Upstream: "d", Ratio: 1.0}}
+	cfg.Routes[3].Mirrors = []Mirror{{Upstream: "c", Ratio: 1.0}}
 	wantErr(t, cfg)
 }
 
@@ -372,9 +375,9 @@ func TestValidate_AcceptsDiamond(t *testing.T) {
 		{Rule: Rule{PathPrefix: "/c"}, Upstream: "c"},
 		{Rule: Rule{PathPrefix: "/d"}, Upstream: "d"},
 	}
-	cfg.Routes[0].Mirror.Upstream, cfg.Routes[0].Mirror.Ratio = "b", 1.0
-	cfg.Routes[1].Mirror.Upstream, cfg.Routes[1].Mirror.Ratio = "d", 1.0
-	cfg.Routes[2].Mirror.Upstream, cfg.Routes[2].Mirror.Ratio = "d", 1.0
+	cfg.Routes[0].Mirrors = []Mirror{{Upstream: "b", Ratio: 1.0}}
+	cfg.Routes[1].Mirrors = []Mirror{{Upstream: "d", Ratio: 1.0}}
+	cfg.Routes[2].Mirrors = []Mirror{{Upstream: "d", Ratio: 1.0}}
 	wantOK(t, cfg)
 }
 
@@ -383,8 +386,7 @@ func TestValidate_ReportsAllErrors(t *testing.T) {
 	cfg.Upstreams[0].Name = ""
 	cfg.Upstreams[1].Host = ""
 	cfg.Routes[0].Upstream = "ghost"
-	cfg.Routes[0].Mirror.Upstream = "ghost"
-	cfg.Routes[0].Mirror.Ratio = 2
+	cfg.Routes[0].Mirrors = []Mirror{{Upstream: "ghost", Ratio: 2}}
 
 	errs := validate(t, cfg)
 	if len(errs) < 3 {
@@ -422,18 +424,19 @@ func TestParseConfig_BrokenYAML(t *testing.T) {
 }
 
 func TestParseConfig_Fields(t *testing.T) {
-	text := `net_timeouts_s:
-  transport: {tcp: 5, keep_alive: 5, tls: 5, response_header: 7, idle_conn: 30}
-  server: {context: 10, read_header: 5, idle: 30}
+	text := `net-timeouts-s:
+  transport: {tcp: 5, keep-alive: 5, tls: 5, response-header: 7, idle-conn: 30}
+  server: {context: 10, read-header: 5, idle: 30}
 upstreams:
   - name: a
     host: http://srv-a:1111
-    timeout_ms: 300
+    timeout-ms: 300
 routes:
   - rules:
-      path_prefix: /v1
+      path-prefix: /v1
       method: POST
-      header: X-Req-Source
+      headers:
+        - name: X-Req-Source
       rewrite: /v2
     upstream: a
 `
@@ -443,7 +446,7 @@ routes:
 	}
 
 	if cfg.NetworkTimeoutsSec.Transport.ResponseHeader != 7 {
-		t.Errorf("transport.response_header: want 7, got %d", cfg.NetworkTimeoutsSec.Transport.ResponseHeader)
+		t.Errorf("transport.response-header: want 7, got %d", cfg.NetworkTimeoutsSec.Transport.ResponseHeader)
 	}
 	if len(cfg.Upstreams) != 1 {
 		t.Fatalf("upstreams: want 1, got %d", len(cfg.Upstreams))
@@ -454,8 +457,11 @@ routes:
 	}
 	rt := cfg.Routes[0]
 	if rt.Rule.PathPrefix != "/v1" || rt.Rule.Method != "POST" ||
-		rt.Rule.Header != "X-Req-Source" || rt.Rule.Rewrite != "/v2" {
+		rt.Rule.Rewrite != "/v2" {
 		t.Errorf("rule: got %+v", rt.Rule)
+	}
+	if len(rt.Rule.Headers) != 1 || rt.Rule.Headers[0].Name != "X-Req-Source" {
+		t.Errorf("rule.headers: got %+v", rt.Rule.Headers)
 	}
 	if rt.Upstream != "a" {
 		t.Errorf("route.upstream: want a, got %q", rt.Upstream)
