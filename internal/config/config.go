@@ -274,9 +274,16 @@ func validateRule(i int, r Rule) []error {
 	return errs
 }
 
+// One route = AND across every header rule (and across method, hosts, client-cidrs).
+// A request matches only if every entry here matches.
+//
+// Under AND, two rules on the same header name are almost always a config
+// author's mistake: they mean OR ("X-Foo is a or b"), which this schema cannot
+// express in a single route. Reject duplicates and point at the alternative.
 func validateHeaders(i int, hs []HeaderMatch) []error {
 	var errs []error
 	seen := make(map[string]int, len(hs))
+
 	for j, h := range hs {
 		if !isValidHeaderName(h.Name) {
 			errs = append(errs, fmt.Errorf("routes[%d].headers[%d]: invalid header name %q", i, j, h.Name))
@@ -285,9 +292,10 @@ func validateHeaders(i int, hs []HeaderMatch) []error {
 
 		key := strings.ToLower(h.Name)
 		if prev, dup := seen[key]; dup {
-			// One rule = AND across headers. Duplicate names make the intent
-			// ambiguous (OR? AND with two values?), so reject them.
-			errs = append(errs, fmt.Errorf("routes[%d].headers[%d]: duplicate header %q (also at [%d])", i, j, h.Name, prev))
+			errs = append(errs, fmt.Errorf(
+				"routes[%d].headers[%d]: duplicate header %q (also at [%d]); "+
+					"headers on one route are ANDed. split into separate routes for OR",
+				i, j, h.Name, prev))
 			continue
 		}
 		seen[key] = j
@@ -295,14 +303,17 @@ func validateHeaders(i int, hs []HeaderMatch) []error {
 		switch h.EffectiveOp() {
 		case HeaderPresent:
 			if h.Value != "" {
-				errs = append(errs, fmt.Errorf("routes[%d].headers[%d]: op=present must not set value", i, j))
+				errs = append(errs, fmt.Errorf(
+					"routes[%d].headers[%d]: op=present must not set value", i, j))
 			}
 		case HeaderEquals, HeaderPrefix, HeaderContains:
 			if h.Value == "" {
-				errs = append(errs, fmt.Errorf("routes[%d].headers[%d]: op=%s requires value", i, j, h.EffectiveOp()))
+				errs = append(errs, fmt.Errorf(
+					"routes[%d].headers[%d]: op=%s requires value", i, j, h.EffectiveOp()))
 			}
 		default:
-			errs = append(errs, fmt.Errorf("routes[%d].headers[%d]: unknown op %q", i, j, h.Op))
+			errs = append(errs, fmt.Errorf(
+				"routes[%d].headers[%d]: unknown op %q", i, j, h.Op))
 		}
 	}
 	return errs

@@ -61,24 +61,24 @@ func request(t *testing.T, method, target string, hdr http.Header) *http.Request
 
 func mustDecide(t *testing.T, r *Router, req *http.Request) string {
 	t.Helper()
-	u, err := r.DecideRoute(req)
+	d, err := r.DecideRoute(req)
 	if err != nil {
 		t.Fatalf("DecideRoute(%s %s): unexpected error: %v", req.Method, req.URL.Path, err)
 	}
-	if u == nil {
-		t.Fatalf("DecideRoute(%s %s): nil URL without error (contract violation)", req.Method, req.URL.Path)
+	if d.Target == nil {
+		t.Fatalf("DecideRoute(%s %s): nil Target without error (contract violation)", req.Method, req.URL.Path)
 	}
-	return u.String()
+	return d.Target.String()
 }
 
 func noDecide(t *testing.T, r *Router, req *http.Request) {
 	t.Helper()
-	u, err := r.DecideRoute(req)
+	d, err := r.DecideRoute(req)
 	if err == nil {
-		t.Fatalf("DecideRoute(%s %s): expected miss, got %q", req.Method, req.URL.Path, u)
+		t.Fatalf("DecideRoute(%s %s): expected miss, got %q", req.Method, req.URL.Path, d.Target)
 	}
-	if u != nil {
-		t.Fatalf("DecideRoute(%s %s): error present but URL is not nil: %q", req.Method, req.URL.Path, u)
+	if d.Target != nil {
+		t.Fatalf("DecideRoute(%s %s): error present but Target is not nil: %q", req.Method, req.URL.Path, d.Target)
 	}
 }
 
@@ -131,9 +131,9 @@ func TestDecideRoute_NilURL(t *testing.T) {
 		[]config.Upstream{upstream("a", "http://a:1111")},
 		[]config.Route{prefixRoute("/api", "a")},
 	))
-	u, err := r.DecideRoute(&http.Request{})
+	d, err := r.DecideRoute(&http.Request{})
 	if err == nil {
-		t.Fatalf("expected error for request without URL, got %q", u)
+		t.Fatalf("expected error for request without URL, got %q", d.Target)
 	}
 }
 
@@ -157,7 +157,13 @@ func TestDecideRoute_MethodFilter(t *testing.T) {
 func TestDecideRoute_HeaderPresence(t *testing.T) {
 	r := newTestRouter(t, testConfig(
 		[]config.Upstream{upstream("a", "http://a:1111")},
-		[]config.Route{{Rule: config.Rule{PathPrefix: "/api", Header: "X-Api-Version"}, Upstream: "a"}},
+		[]config.Route{{
+			Rule: config.Rule{
+				PathPrefix: "/api",
+				Headers:    []config.HeaderMatch{{Name: "X-Api-Version", Op: config.HeaderPresent}},
+			},
+			Upstream: "a",
+		}},
 	))
 
 	h := http.Header{}
@@ -167,7 +173,201 @@ func TestDecideRoute_HeaderPresence(t *testing.T) {
 }
 
 func TestDecideRoute_HeaderExactValue(t *testing.T) {
-	t.Skip("TODO: exact header value match not implemented — only presence is checked")
+	newR := func(match config.HeaderMatch) *Router {
+		return newTestRouter(t, testConfig(
+			[]config.Upstream{upstream("a", "http://a:1111")},
+			[]config.Route{{
+				Rule: config.Rule{
+					PathPrefix: "/api",
+					Headers:    []config.HeaderMatch{match},
+				},
+				Upstream: "a",
+			}},
+		))
+	}
+
+	t.Run("equals op", func(t *testing.T) {
+		r := newR(config.HeaderMatch{Name: "X-Api-Version", Value: "2", Op: config.HeaderEquals})
+
+		t.Run("exact value matches", func(t *testing.T) {
+			h := http.Header{}
+			h.Set("X-Api-Version", "2")
+			mustDecide(t, r, request(t, "GET", "/api/users", h))
+		})
+
+		t.Run("different value rejects", func(t *testing.T) {
+			h := http.Header{}
+			h.Set("X-Api-Version", "3")
+			noDecide(t, r, request(t, "GET", "/api/users", h))
+		})
+
+		t.Run("missing header rejects", func(t *testing.T) {
+			noDecide(t, r, request(t, "GET", "/api/users", nil))
+		})
+
+		t.Run("value comparison is case sensitive", func(t *testing.T) {
+			h := http.Header{}
+			h.Set("X-Api-Version", "V2")
+			noDecide(t, r, request(t, "GET", "/api/users", h))
+		})
+
+		t.Run("any of multiple values matches", func(t *testing.T) {
+			h := http.Header{}
+			h.Add("X-Api-Version", "1")
+			h.Add("X-Api-Version", "2")
+			mustDecide(t, r, request(t, "GET", "/api/users", h))
+		})
+
+		t.Run("config header name is case insensitive", func(t *testing.T) {
+			// Config uses lowercase; runtime header lands under the canonical
+			// key. http.Header.Values canonicalizes the lookup key, so this
+			// must still match.
+			r := newR(config.HeaderMatch{Name: "x-api-version", Value: "2", Op: config.HeaderEquals})
+			h := http.Header{}
+			h.Set("X-Api-Version", "2")
+			mustDecide(t, r, request(t, "GET", "/api/users", h))
+		})
+	})
+
+	// Shorthand: empty Op + non-empty Value defaults to equals.
+	t.Run("shorthand defaults to equals", func(t *testing.T) {
+		r := newR(config.HeaderMatch{Name: "X-Api-Version", Value: "2"})
+
+		t.Run("matching value", func(t *testing.T) {
+			h := http.Header{}
+			h.Set("X-Api-Version", "2")
+			mustDecide(t, r, request(t, "GET", "/api/users", h))
+		})
+
+		t.Run("different value rejects", func(t *testing.T) {
+			h := http.Header{}
+			h.Set("X-Api-Version", "3")
+			noDecide(t, r, request(t, "GET", "/api/users", h))
+		})
+	})
+
+	// Two equals rules on the same route = AND.
+	t.Run("multiple header rules are ANDed", func(t *testing.T) {
+		r := newTestRouter(t, testConfig(
+			[]config.Upstream{upstream("a", "http://a:1111")},
+			[]config.Route{{
+				Rule: config.Rule{
+					PathPrefix: "/api",
+					Headers: []config.HeaderMatch{
+						{Name: "X-Api-Version", Value: "2", Op: config.HeaderEquals},
+						{Name: "X-Tenant", Value: "acme", Op: config.HeaderEquals},
+					},
+				},
+				Upstream: "a",
+			}},
+		))
+
+		t.Run("both present and matching", func(t *testing.T) {
+			h := http.Header{}
+			h.Set("X-Api-Version", "2")
+			h.Set("X-Tenant", "acme")
+			mustDecide(t, r, request(t, "GET", "/api/users", h))
+		})
+
+		t.Run("one missing rejects", func(t *testing.T) {
+			h := http.Header{}
+			h.Set("X-Api-Version", "2")
+			noDecide(t, r, request(t, "GET", "/api/users", h))
+		})
+
+		t.Run("one wrong value rejects", func(t *testing.T) {
+			h := http.Header{}
+			h.Set("X-Api-Version", "2")
+			h.Set("X-Tenant", "other")
+			noDecide(t, r, request(t, "GET", "/api/users", h))
+		})
+	})
+}
+
+func TestDecideRoute_HeaderPrefix(t *testing.T) {
+	r := newTestRouter(t, testConfig(
+		[]config.Upstream{upstream("a", "http://a:1111")},
+		[]config.Route{{
+			Rule: config.Rule{
+				PathPrefix: "/api",
+				Headers: []config.HeaderMatch{
+					{Name: "User-Agent", Value: "mobile-", Op: config.HeaderPrefix},
+				},
+			},
+			Upstream: "a",
+		}},
+	))
+
+	t.Run("prefix matches", func(t *testing.T) {
+		h := http.Header{}
+		h.Set("User-Agent", "mobile-ios/1.2.3")
+		mustDecide(t, r, request(t, "GET", "/api/x", h))
+	})
+
+	t.Run("exact value is a prefix of itself", func(t *testing.T) {
+		h := http.Header{}
+		h.Set("User-Agent", "mobile-")
+		mustDecide(t, r, request(t, "GET", "/api/x", h))
+	})
+
+	t.Run("non-matching prefix rejects", func(t *testing.T) {
+		h := http.Header{}
+		h.Set("User-Agent", "desktop-chrome/120")
+		noDecide(t, r, request(t, "GET", "/api/x", h))
+	})
+
+	t.Run("empty prefix matches any present value", func(t *testing.T) {
+		r := newTestRouter(t, testConfig(
+			[]config.Upstream{upstream("a", "http://a:1111")},
+			[]config.Route{{
+				Rule: config.Rule{
+					PathPrefix: "/api",
+					Headers: []config.HeaderMatch{
+						{Name: "X-Anything", Value: "", Op: config.HeaderPrefix},
+					},
+				},
+				Upstream: "a",
+			}},
+		))
+		h := http.Header{}
+		h.Set("X-Anything", "whatever")
+		mustDecide(t, r, request(t, "GET", "/api/x", h))
+		noDecide(t, r, request(t, "GET", "/api/x", nil))
+	})
+}
+
+func TestDecideRoute_HeaderContains(t *testing.T) {
+	r := newTestRouter(t, testConfig(
+		[]config.Upstream{upstream("a", "http://a:1111")},
+		[]config.Route{{
+			Rule: config.Rule{
+				PathPrefix: "/api",
+				Headers: []config.HeaderMatch{
+					{Name: "X-Features", Value: "beta", Op: config.HeaderContains},
+				},
+			},
+			Upstream: "a",
+		}},
+	))
+
+	t.Run("substring matches", func(t *testing.T) {
+		h := http.Header{}
+		h.Set("X-Features", "alpha,beta,gamma")
+		mustDecide(t, r, request(t, "GET", "/api/x", h))
+	})
+
+	t.Run("non-matching substring rejects", func(t *testing.T) {
+		h := http.Header{}
+		h.Set("X-Features", "alpha,gamma")
+		noDecide(t, r, request(t, "GET", "/api/x", h))
+	})
+
+	t.Run("matches any of multiple values", func(t *testing.T) {
+		h := http.Header{}
+		h.Add("X-Features", "alpha")
+		h.Add("X-Features", "beta-tester")
+		mustDecide(t, r, request(t, "GET", "/api/x", h))
+	})
 }
 
 func TestDecideRoute_ExactPath(t *testing.T) {
@@ -187,7 +387,14 @@ func TestDecideRoute_CombinedFilters(t *testing.T) {
 
 	r := newTestRouter(t, testConfig(
 		[]config.Upstream{upstream("a", "http://a:1111")},
-		[]config.Route{{Rule: config.Rule{PathPrefix: "/api", Method: "POST", Header: "X-Debug"}, Upstream: "a"}},
+		[]config.Route{{
+			Rule: config.Rule{
+				PathPrefix: "/api",
+				Method:     "POST",
+				Headers:    []config.HeaderMatch{{Name: "X-Debug", Op: config.HeaderPresent}},
+			},
+			Upstream: "a",
+		}},
 	))
 
 	mustDecide(t, r, request(t, "POST", "/api/x", h))
@@ -255,19 +462,19 @@ func TestDecideRoute_RewritePrefix(t *testing.T) {
 // in-place (os.WriteFile): rename-overwrite kills the watcher attached to the
 // file.
 
-const timeoutsYAML = `net_timeouts_s:
-  transport: {tcp: 5, keep_alive: 5, tls: 5, response_header: 5, idle_conn: 30}
-  server: {context: 10, read_header: 5, idle: 30}
+const timeoutsYAML = `net-timeouts-s:
+  transport: {tcp: 5, keep-alive: 5, tls: 5, response-header: 5, idle-conn: 30}
+  server: {context: 10, read-header: 5, idle: 30}
 `
 
 const cfgV1YAML = timeoutsYAML + `
 upstreams:
   - name: a
     host: http://srv-a:1111
-    timeout_ms: 300
+    timeout-ms: 300
 routes:
   - rules:
-      path_prefix: /v1
+      path-prefix: /v1
     upstream: a
 `
 
@@ -275,16 +482,16 @@ const cfgV2YAML = timeoutsYAML + `
 upstreams:
   - name: a
     host: http://srv-a:1111
-    timeout_ms: 300
+    timeout-ms: 300
   - name: b
     host: http://srv-b:2222
-    timeout_ms: 300
+    timeout-ms: 300
 routes:
   - rules:
-      path_prefix: /v1
+      path-prefix: /v1
     upstream: a
   - rules:
-      path_prefix: /v2
+      path-prefix: /v2
     upstream: b
 `
 
@@ -293,13 +500,13 @@ const cfgUnknownUpstreamYAML = timeoutsYAML + `
 upstreams:
   - name: a
     host: http://srv-a:1111
-    timeout_ms: 300
+    timeout-ms: 300
 routes:
   - rules:
-      path_prefix: /v1
+      path-prefix: /v1
     upstream: a
   - rules:
-      path_prefix: /v2
+      path-prefix: /v2
     upstream: ghost
 `
 
@@ -329,14 +536,14 @@ func rewriteConfigFile(t *testing.T, path, yamlText string) {
 
 func routesTo(t *testing.T, r *Router, path, wantTarget string) bool {
 	t.Helper()
-	u, err := r.DecideRoute(request(t, "GET", path, nil))
-	return err == nil && u != nil && u.String() == wantTarget
+	d, err := r.DecideRoute(request(t, "GET", path, nil))
+	return err == nil && d.Target != nil && d.Target.String() == wantTarget
 }
 
 func noRouteTo(t *testing.T, r *Router, path string) bool {
 	t.Helper()
-	u, err := r.DecideRoute(request(t, "GET", path, nil))
-	return err != nil && u == nil
+	d, err := r.DecideRoute(request(t, "GET", path, nil))
+	return err != nil && d.Target == nil
 }
 
 func waitFor(t *testing.T, timeout time.Duration, ok func() bool, msg string) {

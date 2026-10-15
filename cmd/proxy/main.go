@@ -60,7 +60,12 @@ func main() {
 		panic("Incorrect router configuration, unable to start the server")
 	}
 
-	proxyMirror := mirroring.NewModule(10, 100)
+	const (
+		numWorkers = 10
+		queueSize  = 100
+	)
+
+	proxyMirror := mirroring.NewModule(numWorkers, queueSize)
 
 	prometheus.MustRegister(metrics.HTTPRequestsTotal)
 	prometheus.MustRegister(metrics.HTTPRequestDuration)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/unisom0rphic/l7proxy/internal/config"
 	"github.com/unisom0rphic/l7proxy/internal/metrics"
+	"github.com/unisom0rphic/l7proxy/internal/mirroring"
 )
 
 type Router struct {
@@ -29,136 +31,281 @@ type Router struct {
 
 func (r *Router) Wait() { r.wg.Wait() }
 
+type Decision struct {
+	Target  *url.URL
+	Mirrors []mirroring.MirrorTarget
+}
+
+type candidate struct {
+	route       *config.Route
+	pathSuffix  string
+	specificity int
+}
+
 // Decides which API route to use for a given http.Request
-func (router *Router) DecideRoute(r *http.Request) (*url.URL, error) {
+func (router *Router) DecideRoute(r *http.Request) (Decision, error) {
 	if r.URL == nil {
-		return nil, errors.New("empty url")
+		return Decision{}, errors.New("empty url")
 	}
 	path := r.URL.Path
 	if path == "" {
-		return nil, errors.New("empty url")
+		return Decision{}, errors.New("empty url")
 	}
 	slog.Debug("decideRoute: received input", "path", path)
-	candidates := make([]*url.URL, 0)
 
-	// Path: if found exact match - return immediately
-	for _, route := range router.Config().Routes {
-		rewrite := route.Rule.Rewrite
+	cfg := router.Config()
 
-		// If rewrite field is empty - use path/prefix itself
-		if rewrite == "" {
-			if route.Rule.Path != "" {
-				rewrite = route.Rule.Path
-			} else {
-				rewrite = route.Rule.PathPrefix
-			}
-		}
-		routePath := route.Rule.Path
-		if routePath == path {
-			name := route.Upstream
-			host, ok := router.Config().NameToHost[name]
-
-			if !ok {
-				slog.Debug("decidePath: route not found")
-				return nil, errors.New("route not found")
-			}
-			slog.Debug("decidePath: route found", "host", host)
-
-			// Method check
-			if method := route.Rule.Method; method != "" {
-				if method != r.Method {
-					return nil, errors.New("Method mismatch")
-				}
-			}
-
-			// Headers existence
-			if header := route.Rule.Header; header != "" {
-				if _, ok := r.Header[header]; !ok {
-					return nil, errors.New("Header not found")
-				}
-			}
-
-			url := &url.URL{
-				Scheme:   host.Scheme,
-				Host:     host.Host,
-				Path:     rewrite,
-				RawQuery: r.URL.RawQuery,
-			}
-			return url, nil
-		}
+	if c, ok := matchExact(cfg, r, path); ok {
+		return finalize(cfg, c, r)
 	}
 
-	// Prefix
-	for _, route := range router.Config().Routes {
+	cs := matchPrefix(cfg, r, path)
+	c, ok := pickBest(cs)
+	if !ok {
+		slog.Debug("decideRoute: no match", "path", path)
+		return Decision{}, errors.New("route not found")
+	}
+
+	return finalize(cfg, c, r)
+}
+
+// matchExact returns the first route whose Rule.Path equals path and whose
+// method/headers/hosts/CIDRs all match.
+func matchExact(cfg *config.Config, r *http.Request, path string) (candidate, bool) {
+	for i := range cfg.Routes {
+		route := &cfg.Routes[i]
+		if route.Rule.Path == "" || route.Rule.Path != path {
+			continue
+		}
+		if !matchConditions(route.Rule, r) {
+			continue
+		}
+		rewrite := effectiveRewrite(route.Rule)
+		return candidate{
+			route:       route,
+			pathSuffix:  "",
+			specificity: len(rewrite),
+		}, true
+	}
+	return candidate{}, false
+}
+
+// matchPrefix returns every prefix route whose path prefix matches and whose
+// conditions all match. Candidates are unresolved.
+func matchPrefix(cfg *config.Config, r *http.Request, path string) []candidate {
+	var cs []candidate
+	for i := range cfg.Routes {
+		route := &cfg.Routes[i]
 		prefix := route.Rule.PathPrefix
 		if prefix == "" {
 			continue
 		}
-
-		rewrite := route.Rule.Rewrite
-
-		// If rewrite field is empty - use path/prefix itself
-		if rewrite == "" {
-			if route.Rule.Path != "" {
-				rewrite = route.Rule.Path
-			} else {
-				rewrite = route.Rule.PathPrefix
-			}
+		if !strings.HasPrefix(path, prefix) {
+			continue
 		}
+		if !matchConditions(route.Rule, r) {
+			continue
+		}
+		slog.Debug("found prefix", "prefix", prefix, "path", path)
+		rewrite := effectiveRewrite(route.Rule)
+		suffix := path[len(prefix):]
+		cs = append(cs, candidate{
+			route:       route,
+			pathSuffix:  suffix,
+			specificity: len(rewrite + suffix),
+		})
+	}
+	return cs
+}
 
-		if strings.HasPrefix(path, prefix) {
-			slog.Debug("found prefix", "prefix", prefix, "path", path)
-			upstreamService := route.Upstream
-			host, ok := router.Config().NameToHost[upstreamService]
+// matchConditions checks everything about the request except the path shape:
+// method, headers, hosts, and client CIDRs.
+func matchConditions(rule config.Rule, r *http.Request) bool {
+	if method := rule.Method; method != "" && method != r.Method {
+		return false
+	}
 
-			if !ok {
-				// If we reach this branch it means the config was incorrectly parsed,
-				// which means serious issue inside the parser that bypasses the tests.
-				// TODO: consider panicking when config validator ensures each name is mapped
-				// to the host.
-				slog.Error("decideRoute: host not found in upstreams",
-					"upstream", upstreamService, "prefix", prefix, "path", path)
-				return nil, errors.New("URL host not mapped during config parse")
-			}
-
-			// Method check
-			if method := route.Rule.Method; method != "" && method != r.Method {
-				continue
-			}
-
-			// Headers existence
-			if header := route.Rule.Header; header != "" {
-				if _, ok := r.Header[header]; !ok {
-					continue
-				}
-			}
-
-			url := &url.URL{
-				Scheme:   host.Scheme,
-				Host:     host.Host,
-				Path:     rewrite + path[len(prefix):],
-				RawQuery: r.URL.RawQuery,
-			}
-			candidates = append(candidates, url)
+	for _, h := range rule.Headers {
+		if !headerMatches(h, r.Header) {
+			return false
 		}
 	}
 
-	if len(candidates) == 0 {
-		slog.Debug("decideRoute: no match", "path", path)
-		return nil, errors.New("route not found")
+	if len(rule.Hosts) > 0 && !hostMatches(rule.Hosts, r.Host) {
+		return false
 	}
 
+	if len(rule.ClientCIDRs) > 0 && !clientIPMatches(rule.ClientCIDRs, r.RemoteAddr) {
+		return false
+	}
+
+	return true
+}
+
+func headerMatches(h config.HeaderMatch, headers http.Header) bool {
+	values := headers.Values(h.Name)
+	if len(values) == 0 {
+		return false
+	}
+	switch h.EffectiveOp() {
+	case config.HeaderPresent:
+		return true
+	case config.HeaderEquals:
+		for _, v := range values {
+			if v == h.Value {
+				return true
+			}
+		}
+	case config.HeaderPrefix:
+		for _, v := range values {
+			if strings.HasPrefix(v, h.Value) {
+				return true
+			}
+		}
+	case config.HeaderContains:
+		for _, v := range values {
+			if strings.Contains(v, h.Value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hostMatches(hosts []string, host string) bool {
+	h := hostOnly(host)
+	for _, pattern := range hosts {
+		p := strings.ToLower(pattern)
+		if strings.HasPrefix(p, "*.") {
+			// h must end with ".rest" and be strictly longer than
+			// "rest"
+			if strings.HasSuffix(h, p[1:]) && len(h) > len(p)-1 {
+				return true
+			}
+			continue
+		}
+		if h == p {
+			return true
+		}
+	}
+	return false
+}
+
+// hostOnly strips the port from an r.Host value and lowercases the result.
+func hostOnly(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return strings.ToLower(h)
+	}
+	host = strings.TrimPrefix(host, "[")
+	host = strings.TrimSuffix(host, "]")
+	return strings.ToLower(host)
+}
+
+func clientIPMatches(cidrs []string, remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, c := range cidrs {
+		_, netw, err := net.ParseCIDR(c)
+		if err != nil {
+			continue
+		}
+		if netw.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// pickBest selects the winning candidate.
+func pickBest(cs []candidate) (candidate, bool) {
 	// Looking for the longest URL
-	maxLen := 0
-	var bestCandidate *url.URL
-	for _, candidate := range candidates {
-		if len(candidate.Path) > maxLen {
-			maxLen = len(candidate.Path)
-			bestCandidate = candidate
+	var best candidate
+	found := false
+	for _, c := range cs {
+		if !found || c.specificity > best.specificity {
+			best = c
+			found = true
 		}
 	}
+	return best, found
+}
 
-	return bestCandidate, nil
+// finalize resolves the winning candidate into a Decision.
+func finalize(cfg *config.Config, c candidate, r *http.Request) (Decision, error) {
+	host, err := resolveHost(cfg, c.route.Upstream)
+	if err != nil {
+		return Decision{}, err
+	}
+
+	rewrite := effectiveRewrite(c.route.Rule)
+	target := buildTarget(host, rewrite, c.pathSuffix, r.URL.RawQuery)
+
+	mirrors, err := resolveMirrors(cfg, c.route.Mirrors)
+	if err != nil {
+		return Decision{}, err
+	}
+
+	slog.Debug("decideRoute: route found", "host", host, "mirrors", len(mirrors))
+	return Decision{Target: target, Mirrors: mirrors}, nil
+}
+
+func resolveHost(cfg *config.Config, name string) (*url.URL, error) {
+	host, ok := cfg.NameToHost[name]
+	if !ok {
+		// If we reach this branch it means the config was incorrectly parsed,
+		// which means serious issue inside the parser that bypasses the tests.
+		// TODO: consider panicking when config validator ensures each name is mapped
+		// to the host.
+		slog.Error("decideRoute: host not found in upstreams", "upstream", name)
+		return nil, errors.New("URL host not mapped during config parse")
+	}
+	return host, nil
+}
+
+func resolveMirrors(cfg *config.Config, mirrors []config.Mirror) ([]mirroring.MirrorTarget, error) {
+	if len(mirrors) == 0 {
+		return nil, nil
+	}
+	out := make([]mirroring.MirrorTarget, 0, len(mirrors))
+	for _, m := range mirrors {
+		host, ok := cfg.NameToHost[m.Upstream]
+		if !ok {
+			slog.Error("decideRoute: mirror host not found in upstreams", "upstream", m.Upstream)
+			return nil, fmt.Errorf("mirror %q not mapped during config parse", m.Upstream)
+		}
+		out = append(out, mirroring.MirrorTarget{URL: host, Ratio: m.Ratio})
+	}
+	return out, nil
+}
+
+// effectiveRewrite returns the outbound path base: Rule.Rewrite if set,
+// otherwise the matched Path or PathPrefix.
+func effectiveRewrite(rule config.Rule) string {
+	if rule.Rewrite != "" {
+		return rule.Rewrite
+	}
+	if rule.Path != "" {
+		return rule.Path
+	}
+	return rule.PathPrefix
+}
+
+// buildTarget constructs the outbound URL for the winning candidate.
+// pathSuffix is "" for exact matches; for prefixes it's the remainder after
+// the matched prefix.
+func buildTarget(host *url.URL, rewrite, pathSuffix, rawQuery string) *url.URL {
+	return &url.URL{
+		Scheme:   host.Scheme,
+		Host:     host.Host,
+		Path:     rewrite + pathSuffix,
+		RawQuery: rawQuery,
+	}
 }
 
 func CreateFromConfig(ctx context.Context, configPath string) (*Router, error) {

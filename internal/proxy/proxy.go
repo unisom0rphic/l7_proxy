@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -73,7 +72,7 @@ func (p *L7Proxy) setupMux() {
 }
 
 func (p *L7Proxy) rewrite(pr *httputil.ProxyRequest) {
-	route, err := p.router.DecideRoute(pr.In)
+	decision, err := p.router.DecideRoute(pr.In)
 
 	if err != nil {
 		ctx := context.WithValue(pr.Out.Context(), "proxyError", http.StatusNotFound)
@@ -89,7 +88,8 @@ func (p *L7Proxy) rewrite(pr *httputil.ProxyRequest) {
 	pr.Out.Body = io.NopCloser(bytes.NewReader(body))
 
 	// FIXME: mirrors list instead of just resending the same request
-	job := mirroring.NewJob(pr.In.Method, body, pr.In.Header.Clone(), []*url.URL{route})
+	// how do we get mirrors for a required route?
+	job := mirroring.NewJob(pr.In.Method, body, pr.In.Header.Clone(), decision.Mirrors)
 
 	// TODO: error.As(err, &maxErr) in switch
 	if err != nil {
@@ -101,10 +101,10 @@ func (p *L7Proxy) rewrite(pr *httputil.ProxyRequest) {
 		p.mirrorModule.TrySubmit(*job)
 	}
 
-	slog.Debug("Router decision", "route", route)
+	slog.Debug("Router decision", "route", decision.Target)
 
 	pr.SetXForwarded()
-	pr.Out.URL = route
+	pr.Out.URL = decision.Target
 }
 
 func (p *L7Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) {

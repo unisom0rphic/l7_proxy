@@ -11,14 +11,19 @@ import (
 	"time"
 )
 
+type MirrorTarget struct {
+	URL   *url.URL
+	Ratio float64
+}
+
 type MirrorJob struct {
 	method  string
 	body    []byte
 	header  http.Header
-	targets []*url.URL
+	targets []MirrorTarget
 }
 
-func NewJob(method string, body []byte, header http.Header, targets []*url.URL) *MirrorJob {
+func NewJob(method string, body []byte, header http.Header, targets []MirrorTarget) *MirrorJob {
 	return &MirrorJob{
 		method:  method,
 		body:    body,
@@ -58,6 +63,7 @@ func (m *MirrorModule) TrySubmit(j MirrorJob) {
 }
 
 func (m *MirrorModule) worker() {
+	// TODO: ratio
 	defer m.wg.Done()
 	for j := range m.queue {
 		// TODO: maybe sync.Pool for waitgroups?
@@ -71,7 +77,7 @@ func (m *MirrorModule) worker() {
 					return
 				}
 				m.sent.Add(1)
-			}(t)
+			}(t.URL)
 		}
 		wg.Wait()
 	}
