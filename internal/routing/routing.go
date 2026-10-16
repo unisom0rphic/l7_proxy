@@ -328,7 +328,9 @@ func CreateFromConfig(ctx context.Context, configPath string) (*Router, error) {
 	}
 	router.configPath = configPath
 
-	router.startMonitoringConfigUpdates(ctx)
+	if err := router.startMonitoringConfigUpdates(ctx); err != nil {
+		return nil, err
+	}
 
 	return router, nil
 }
@@ -340,7 +342,8 @@ func NewRouter(cfg *config.Config) (*Router, error) {
 }
 
 // Starts monitoring config file for updates, automatically swaps if notices changes.
-// Panics on config file removal.
+// A removed config is reported and ignored: the router keeps serving the last
+// valid config until the file reappears.
 func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -349,10 +352,17 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 
 	absTarget, err := filepath.Abs(router.configPath)
 	if err != nil {
+		watcher.Close()
 		return fmt.Errorf("failed to obtain absolute path: %w", err)
 	}
 
 	parentDir := filepath.Dir(absTarget)
+
+	if err := watcher.Add(parentDir); err != nil {
+		watcher.Close()
+		return fmt.Errorf("adding directory (%s) to watch list failed: %w", parentDir, err)
+	}
+	slog.Info("monitoring changes", "config", router.configPath)
 
 	// Listener loop
 	router.wg.Go(func() {
@@ -364,6 +374,15 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 		}
 		defer configCooldown.Stop()
 		onCoolDown := false
+
+		reload := func(source string) {
+			if onCoolDown {
+				return
+			}
+			router.reloadConfig(source)
+			onCoolDown = true
+			configCooldown.Reset(reloadCooldown)
+		}
 
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGHUP)
@@ -379,17 +398,7 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 			case <-sigCh:
 				// SIGHUP will be intercepted if using `go run .`,
 				// this execution path is only accessible from the compiled binary
-				if onCoolDown {
-					continue
-				}
-				slog.Info("SIGHUP received, reloading")
-				err = router.updateConfig()
-				if err != nil {
-					slog.Error("error updating config", "error", err)
-					metrics.ConfigReloadErrorsTotal.WithLabelValues("parse").Inc()
-				}
-				onCoolDown = true
-				configCooldown.Reset(1 * time.Second)
+				reload("SIGHUP")
 
 			case event, ok := <-watcher.Events:
 				if !ok {
@@ -401,25 +410,20 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 					continue
 				}
 
-				if absEventPath != absTarget {
+				if !isTargetPath(absEventPath, absTarget) {
 					continue
 				}
 
-				if event.Has(fsnotify.Write) {
-					if onCoolDown {
+				switch {
+				case event.Has(fsnotify.Remove), event.Has(fsnotify.Rename):
+					if _, err := os.Stat(absTarget); err != nil {
+						slog.Error("Config deleted", "path", router.configPath, "event", event.Name)
+						metrics.ConfigReloadErrorsTotal.WithLabelValues("remove").Inc()
 						continue
 					}
-					slog.Info("config modified", "file", event.Name)
-					err = router.updateConfig()
-					if err != nil {
-						slog.Error("error updating config", "error", err)
-						metrics.ConfigReloadErrorsTotal.WithLabelValues("parse").Inc()
-					}
-					onCoolDown = true
-					configCooldown.Reset(1 * time.Second)
-				} else if event.Has(fsnotify.Remove) {
-					slog.Error("Config deleted", "path", router.configPath, "event", event.Name)
-					metrics.ConfigReloadErrorsTotal.WithLabelValues("remove").Inc()
+					reload("config replaced")
+				case event.Has(fsnotify.Write), event.Has(fsnotify.Create):
+					reload("config modified")
 				}
 			case <-configCooldown.C:
 				onCoolDown = false
@@ -433,13 +437,43 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 		}
 	})
 
-	err = watcher.Add(parentDir)
-	if err != nil {
-		return fmt.Errorf("adding directory (%s) to watch list failed: %w", parentDir, err)
-	}
-	slog.Info("monitoring changes", "config", router.configPath)
-
 	return nil
+}
+
+// isTargetPath reports whether an fsnotify event refers to the watched config
+// file. Paths can be spelled differently from configPath (Windows casing short
+// names, symlinks), so identity is compared where possible.
+func isTargetPath(eventPath, target string) bool {
+	if strings.EqualFold(eventPath, target) {
+		return true
+	}
+	eventInfo, err := os.Stat(eventPath)
+	if err != nil {
+		return false
+	}
+	targetInfo, err := os.Stat(target)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(eventInfo, targetInfo)
+}
+
+const reloadCooldown = 1 * time.Second
+
+var errInvalidConfig = errors.New("invalid config")
+
+// reloadConfig re-reads the config file and swaps it in. A failed reload is
+// logged and counted, and leaves the previous config in place.
+func (router *Router) reloadConfig(source string) {
+	slog.Info("reloading config", "source", source, "file", router.configPath)
+	if err := router.updateConfig(); err != nil {
+		reason := "parse"
+		if errors.Is(err, errInvalidConfig) {
+			reason = "validate"
+		}
+		slog.Error("error updating config", "source", source, "reason", reason, "error", err)
+		metrics.ConfigReloadErrorsTotal.WithLabelValues(reason).Inc()
+	}
 }
 
 // Used to apply changes in router`s config file
@@ -454,7 +488,7 @@ func (router *Router) updateConfig() error {
 		for _, e := range errs {
 			slog.Error("config validation error", "err", e)
 		}
-		return fmt.Errorf("invalid config")
+		return errInvalidConfig
 	}
 
 	router.swapConfig(cfg)
