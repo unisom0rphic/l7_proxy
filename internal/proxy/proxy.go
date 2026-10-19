@@ -53,17 +53,35 @@ func (p *L7Proxy) contextTimeout() time.Duration {
 	return p.toSec(p.infraConfig.NetworkTimeoutsSec.Server.Context)
 }
 
+// decisionKey carries the routing decision from ServeHTTP into rewrite, so the
+// route is resolved once per request.
+type decisionKey struct{}
+
 func (p *L7Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+
+	decision, err := p.router.DecideRoute(r)
+	if err != nil {
+		slog.Debug("no route for request", "method", r.Method, "path", r.URL.Path, "error", err)
+		http.NotFound(w, r)
+		p.observe(r, http.StatusNotFound, start)
+		return
+	}
+
 	wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 
 	ctx, cancel := context.WithTimeout(r.Context(), p.contextTimeout())
 	defer cancel()
+	ctx = context.WithValue(ctx, decisionKey{}, decision)
 
 	p.rp.ServeHTTP(wrapped, r.WithContext(ctx))
 
+	p.observe(r, wrapped.statusCode, start)
+}
+
+func (p *L7Proxy) observe(r *http.Request, status int, start time.Time) {
 	if p.metrics != nil {
-		p.metrics.Observe(r.Method, r.URL.Path, wrapped.statusCode, time.Since(start))
+		p.metrics.Observe(r.Method, r.URL.Path, status, time.Since(start))
 	}
 }
 
@@ -74,56 +92,47 @@ func (p *L7Proxy) setupMux() {
 }
 
 func (p *L7Proxy) rewrite(pr *httputil.ProxyRequest) {
-	decision, err := p.router.DecideRoute(pr.In)
-
-	if err != nil {
-		ctx := context.WithValue(pr.Out.Context(), "proxyError", http.StatusNotFound)
-		pr.Out = pr.Out.WithContext(ctx)
-		// FIXME: ErrorHandler is triggered because scheme is ""
-		// because the route wasn't found, not because we entered this block
-		// it works but it DOESN'T LET ME SLEEP
+	decision, ok := pr.In.Context().Value(decisionKey{}).(routing.Decision)
+	if !ok {
+		// Unreachable while ServeHTTP decides before handing over to the proxy.
+		slog.Error("rewrite called without a routing decision", "path", pr.In.URL.Path)
 		return
 	}
 
-	// if pr.In.Body != nil && pr.In.Body != http.NoBody && pr.In.ContentLength != 0 {
 	body, err := io.ReadAll(pr.In.Body)
 	pr.Out.Body = io.NopCloser(bytes.NewReader(body))
-
-	// FIXME: mirrors list instead of just resending the same request
-	// how do we get mirrors for a required route?
-	job := mirroring.NewJob(pr.In.Method, body, pr.In.Header.Clone(), decision.Mirrors)
-
-	// TODO: error.As(err, &maxErr) in switch
 	if err != nil {
-		slog.Warn("Unable to read request body", "body_len", len(body), "error", err)
-	} else {
-		// Copy not required until a sync.Pool is introduced
-		// bufCopy := make([]byte, len(body))
-		// copy(bufCopy, body)
-		p.mirrorModule.TrySubmit(*job)
+		slog.Warn("unable to read request body, not mirroring", "error", err)
 	}
 
-	slog.Debug("Router decision", "route", decision.Target)
-
 	pr.SetXForwarded()
+
+	// Not SetURL: it joins the target path onto the inbound one, and the target
+	// already carries the full outbound path. Clearing Host makes the upstream
+	// receive its own host instead of the client's.
 	pr.Out.URL = decision.Target
+	pr.Out.Host = ""
+
+	if err == nil && len(decision.Mirrors) > 0 {
+		p.mirrorModule.TrySubmit(mirroring.NewJob(
+			pr.In.Method,
+			body,
+			pr.Out.Header,
+			decision.Target.Path,
+			decision.Target.RawQuery,
+			decision.Mirrors,
+		))
+	}
 }
 
 func (p *L7Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	slog.Info("Proxy HTTP error", "method", r.Method, "path", r.URL.Path, "error", err)
 
-	e := r.Context().Value("proxyError")
-
-	switch {
-	case e == http.StatusBadRequest:
-		http.Error(w, "Bad request: ", http.StatusBadRequest)
-	case e == http.StatusNotFound:
-		http.NotFound(w, r)
-	case errors.Is(err, context.DeadlineExceeded):
+	if errors.Is(err, context.DeadlineExceeded) {
 		http.Error(w, "Request timed out on the server", http.StatusGatewayTimeout)
-	default:
-		http.Error(w, "Bad Gateway: unexpected error", http.StatusBadGateway)
+		return
 	}
+	http.Error(w, "Bad Gateway: unexpected error", http.StatusBadGateway)
 }
 
 func (p *L7Proxy) modifyResponse(resp *http.Response) error {

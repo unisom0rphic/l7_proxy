@@ -54,8 +54,8 @@ error, so a typo never silently turns into a zero value.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `workers` | int | 0 (disabled) | Number of mirroring worker goroutines. |
-| `queue-size` | int | 0 (disabled) | Size of the mirroring job queue. |
+| `workers` | int | 10 | Number of mirroring worker goroutines. `0` or unset uses the default. |
+| `queue-size` | int | 100 | Size of the mirroring job queue. `0` or unset uses the default. |
 
 ---
 
