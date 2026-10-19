@@ -20,13 +20,13 @@ import (
 )
 
 type L7Proxy struct {
-	mirrorModule *mirroring.MirrorModule
-	rp           *httputil.ReverseProxy
-	router       *routing.Router
-	server       *http.Server
-	mux          *http.ServeMux
-	metrics      *metrics.RequestMetrics
-	infraConfig  *config.InfrastructureConfig
+	mirroringPool *mirroring.Pool
+	rp            *httputil.ReverseProxy
+	router        *routing.Router
+	server        *http.Server
+	mux           *http.ServeMux
+	metrics       *metrics.RequestMetrics
+	infraConfig   *config.InfrastructureConfig
 }
 
 type responseWriter struct {
@@ -53,11 +53,8 @@ func (p *L7Proxy) contextTimeout() time.Duration {
 	return p.toSec(p.infraConfig.NetworkTimeoutsSec.Server.Context)
 }
 
-// decisionKey carries the routing decision from ServeHTTP into rewrite, so the
-// route is resolved once per request.
 type decisionKey struct{}
 
-// upstreamUnmatched labels requests that matched no route.
 const upstreamUnmatched = "unmatched"
 
 func (p *L7Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +99,7 @@ func (p *L7Proxy) rewrite(pr *httputil.ProxyRequest) {
 		return
 	}
 
+	// Currently works according to ADR-0003
 	body, err := io.ReadAll(pr.In.Body)
 	pr.Out.Body = io.NopCloser(bytes.NewReader(body))
 	if err != nil {
@@ -110,14 +108,11 @@ func (p *L7Proxy) rewrite(pr *httputil.ProxyRequest) {
 
 	pr.SetXForwarded()
 
-	// Not SetURL: it joins the target path onto the inbound one, and the target
-	// already carries the full outbound path. Clearing Host makes the upstream
-	// receive its own host instead of the client's.
 	pr.Out.URL = decision.Target
 	pr.Out.Host = ""
 
 	if err == nil && len(decision.Mirrors) > 0 {
-		p.mirrorModule.TrySubmit(mirroring.NewJob(
+		p.mirroringPool.TrySubmit(mirroring.NewJob(
 			pr.In.Method,
 			body,
 			pr.Out.Header,
@@ -167,14 +162,14 @@ func (p *L7Proxy) buildTransport(infraConfig *config.InfrastructureConfig) *http
 	}
 }
 
-func New(r *routing.Router, infraConfig *config.InfrastructureConfig, m *metrics.RequestMetrics, mm *mirroring.MirrorModule) *L7Proxy {
+func New(r *routing.Router, infraConfig *config.InfrastructureConfig, m *metrics.RequestMetrics, mirroringPool *mirroring.Pool) *L7Proxy {
 	slog.Debug("INFRASTRUCTURE CONFIG", "config", infraConfig)
 
 	proxy := &L7Proxy{
-		router:       r,
-		metrics:      m,
-		mirrorModule: mm,
-		infraConfig:  infraConfig,
+		router:        r,
+		metrics:       m,
+		mirroringPool: mirroringPool,
+		infraConfig:   infraConfig,
 	}
 
 	proxy.rp = &httputil.ReverseProxy{
@@ -221,7 +216,7 @@ func (p *L7Proxy) Run(ctx context.Context) error {
 		}
 
 		done := make(chan struct{})
-		go func() { p.router.Wait(); p.mirrorModule.Stop(); close(done) }()
+		go func() { p.router.Wait(); p.mirroringPool.Stop(); close(done) }()
 
 		select {
 		case <-done:

@@ -78,8 +78,8 @@ func main() {
 		panic("Incorrect routing configuration, unable to start the server")
 	}
 
-	// Create mirror module with config values
-	proxyMirror := mirroring.NewModule(
+	// Create mirror pool with config values
+	proxyMirror := mirroring.NewPool(
 		infraConfig.Mirroring.Workers,
 		infraConfig.Mirroring.QueueSize,
 		metrics.Mirror,

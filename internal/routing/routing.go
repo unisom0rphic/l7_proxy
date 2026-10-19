@@ -32,11 +32,9 @@ type Router struct {
 func (r *Router) Wait() { r.wg.Wait() }
 
 type Decision struct {
-	// Upstream is the winning route's upstream name, used as a bounded metric
-	// label instead of the request path.
 	Upstream string
 	Target   *url.URL
-	Mirrors  []mirroring.MirrorTarget
+	Mirrors  []mirroring.Target
 }
 
 type candidate struct {
@@ -271,18 +269,18 @@ func resolveHost(cfg *config.Config, name string) (*url.URL, error) {
 	return host, nil
 }
 
-func resolveMirrors(cfg *config.Config, mirrors []config.Mirror) ([]mirroring.MirrorTarget, error) {
+func resolveMirrors(cfg *config.Config, mirrors []config.Mirror) ([]mirroring.Target, error) {
 	if len(mirrors) == 0 {
 		return nil, nil
 	}
-	out := make([]mirroring.MirrorTarget, 0, len(mirrors))
+	out := make([]mirroring.Target, 0, len(mirrors))
 	for _, m := range mirrors {
 		host, ok := cfg.NameToHost[m.Upstream]
 		if !ok {
 			slog.Error("decideRoute: mirror host not found in upstreams", "upstream", m.Upstream)
 			return nil, fmt.Errorf("mirror %q not mapped during config parse", m.Upstream)
 		}
-		out = append(out, mirroring.MirrorTarget{URL: host, Ratio: m.Ratio})
+		out = append(out, mirroring.Target{URL: host, Ratio: m.Ratio})
 	}
 	return out, nil
 }

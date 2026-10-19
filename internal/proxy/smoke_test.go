@@ -24,9 +24,8 @@ import (
 	"github.com/unisom0rphic/l7proxy/internal/routing"
 )
 
-// Self-contained end-to-end test: real config files, real listeners, real
-// routing, mirroring and metrics. Unlike the live-stack tests above it needs
-// nothing running, so it always executes.
+// Self-contained end-to-end test.
+// Does not require anything running.
 
 const smokeRoutesYAML = `upstreams:
   - name: users-prod
@@ -119,7 +118,7 @@ func TestSmoke_EndToEnd(t *testing.T) {
 		t.Fatalf("create router: %v", err)
 	}
 
-	p := proxy.New(router, infraConfig, metrics.Default, mirroring.NewModule(
+	p := proxy.New(router, infraConfig, metrics.Default, mirroring.NewPool(
 		infraConfig.Mirroring.Workers,
 		infraConfig.Mirroring.QueueSize,
 		metrics.Mirror,

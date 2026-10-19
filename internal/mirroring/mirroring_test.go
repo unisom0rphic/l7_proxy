@@ -12,13 +12,13 @@ import (
 	"github.com/unisom0rphic/l7proxy/internal/metrics"
 )
 
-func newTestModule(t *testing.T, workers, queueSize int) (*MirrorModule, *metrics.MirrorMetrics) {
+func newTestPool(t *testing.T, workers, queueSize int) (*Pool, *metrics.MirrorMetrics) {
 	t.Helper()
 
 	mc := metrics.NewMirrorMetrics()
-	m := NewModule(workers, queueSize, mc)
-	t.Cleanup(m.Stop)
-	return m, mc
+	p := NewPool(workers, queueSize, mc)
+	t.Cleanup(p.Stop)
+	return p, mc
 }
 
 func counterValue(t *testing.T, mc *metrics.MirrorMetrics, result string) float64 {
@@ -91,9 +91,9 @@ func TestMirrorSendsRequestShape(t *testing.T) {
 	got := make(chan mirrorRequest, 1)
 	target := newMirrorServer(t, got)
 
-	m, mc := newTestModule(t, 1, 1)
+	p, mc := newTestPool(t, 1, 1)
 
-	m.TrySubmit(NewJob(
+	p.TrySubmit(NewJob(
 		http.MethodPost,
 		[]byte("payload"),
 		http.Header{
@@ -105,7 +105,7 @@ func TestMirrorSendsRequestShape(t *testing.T) {
 		},
 		"/api/orders/42",
 		"a=1&b=2",
-		[]MirrorTarget{{URL: target, Ratio: 1}},
+		[]Target{{URL: target, Ratio: 1}},
 	))
 
 	select {
@@ -140,9 +140,7 @@ func TestMirrorSendsRequestShape(t *testing.T) {
 		t.Fatal("mirror never received the request")
 	}
 
-	// Stop drains the queue and waits for in-flight mirrors, so the counters
-	// have settled by the time it returns.
-	m.Stop()
+	p.Stop()
 	if n := counterValue(t, mc, metrics.MirrorSent); n != 1 {
 		t.Errorf("sent: want 1, got %v", n)
 	}
@@ -152,15 +150,13 @@ func TestMirrorSkipsRatioZero(t *testing.T) {
 	got := make(chan mirrorRequest, 1)
 	target := newMirrorServer(t, got)
 
-	// Both jobs have to fit: TrySubmit drops rather than blocks on a full queue.
-	m, _ := newTestModule(t, 1, 2)
+	p, _ := newTestPool(t, 1, 2)
 
-	m.TrySubmit(NewJob(http.MethodGet, nil, http.Header{}, "/skipped", "",
-		[]MirrorTarget{{URL: target, Ratio: 0}}))
+	p.TrySubmit(NewJob(http.MethodGet, nil, http.Header{}, "/skipped", "",
+		[]Target{{URL: target, Ratio: 0}}))
 
-	// A job that does get mirrored proves the worker moved past the first one.
-	m.TrySubmit(NewJob(http.MethodGet, nil, http.Header{}, "/sent", "",
-		[]MirrorTarget{{URL: target, Ratio: 1}}))
+	p.TrySubmit(NewJob(http.MethodGet, nil, http.Header{}, "/sent", "",
+		[]Target{{URL: target, Ratio: 1}}))
 
 	select {
 	case r := <-got:
@@ -175,14 +171,14 @@ func TestMirrorSkipsRatioZero(t *testing.T) {
 func TestMirrorFansOutToEveryTarget(t *testing.T) {
 	first := make(chan mirrorRequest, 1)
 	second := make(chan mirrorRequest, 1)
-	targets := []MirrorTarget{
+	targets := []Target{
 		{URL: newMirrorServer(t, first), Ratio: 1},
 		{URL: newMirrorServer(t, second), Ratio: 1},
 	}
 
-	m, _ := newTestModule(t, 1, 1)
+	p, _ := newTestPool(t, 1, 1)
 
-	m.TrySubmit(NewJob(http.MethodGet, nil, http.Header{}, "/api/x", "",
+	p.TrySubmit(NewJob(http.MethodGet, nil, http.Header{}, "/api/x", "",
 		targets))
 
 	for i, ch := range []chan mirrorRequest{first, second} {
@@ -201,14 +197,14 @@ func TestNewModuleWithZeroValuesStillMirrors(t *testing.T) {
 	got := make(chan mirrorRequest, 1)
 	target := newMirrorServer(t, got)
 
-	m, _ := newTestModule(t, 0, 0)
+	p, _ := newTestPool(t, 0, 0)
 
-	if cap(m.queue) != defaultQueueSize {
-		t.Errorf("queue capacity: want %d, got %d", defaultQueueSize, cap(m.queue))
+	if cap(p.queue) != defaultQueueSize {
+		t.Errorf("queue capacity: want %d, got %d", defaultQueueSize, cap(p.queue))
 	}
 
-	m.TrySubmit(NewJob(http.MethodGet, nil, http.Header{}, "/api/x", "",
-		[]MirrorTarget{{URL: target, Ratio: 1}}))
+	p.TrySubmit(NewJob(http.MethodGet, nil, http.Header{}, "/api/x", "",
+		[]Target{{URL: target, Ratio: 1}}))
 
 	select {
 	case r := <-got:
@@ -224,12 +220,12 @@ func TestStopIsIdempotentAndRejectsLateSubmits(t *testing.T) {
 	got := make(chan mirrorRequest, 1)
 	target := newMirrorServer(t, got)
 
-	m, mc := newTestModule(t, 1, 1)
-	m.Stop()
-	m.Stop()
+	p, mc := newTestPool(t, 1, 1)
+	p.Stop()
+	p.Stop()
 
-	m.TrySubmit(NewJob(http.MethodGet, nil, http.Header{}, "/late", "",
-		[]MirrorTarget{{URL: target, Ratio: 1}}))
+	p.TrySubmit(NewJob(http.MethodGet, nil, http.Header{}, "/late", "",
+		[]Target{{URL: target, Ratio: 1}}))
 
 	if n := counterValue(t, mc, metrics.MirrorDropped); n != 1 {
 		t.Errorf("dropped: want 1, got %v", n)

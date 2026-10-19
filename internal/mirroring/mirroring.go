@@ -14,27 +14,22 @@ import (
 	"github.com/unisom0rphic/l7proxy/internal/metrics"
 )
 
-// MirrorTarget is one destination a request may be copied to. Ratio is the
-// fraction of requests to send, in [0, 1].
-type MirrorTarget struct {
+type Target struct {
 	URL   *url.URL
 	Ratio float64
 }
 
-// MirrorJob is a single request to be copied to every target that samples in.
-type MirrorJob struct {
+type Job struct {
 	method   string
 	body     []byte
 	header   http.Header
 	path     string
 	rawQuery string
-	targets  []MirrorTarget
+	targets  []Target
 }
 
-// NewJob captures an outbound request. path and rawQuery are the values the
-// primary upstream received, so a mirror sees the same URI it would have.
-func NewJob(method string, body []byte, header http.Header, path, rawQuery string, targets []MirrorTarget) MirrorJob {
-	return MirrorJob{
+func NewJob(method string, body []byte, header http.Header, path, rawQuery string, targets []Target) Job {
+	return Job{
 		method:   method,
 		body:     body,
 		header:   header,
@@ -50,9 +45,9 @@ const (
 	mirrorTimeout    = 5 * time.Second
 )
 
-type MirrorModule struct {
+type Pool struct {
 	client  *http.Client
-	queue   chan MirrorJob
+	queue   chan Job
 	wg      sync.WaitGroup
 	metrics *metrics.MirrorMetrics
 
@@ -61,8 +56,8 @@ type MirrorModule struct {
 }
 
 // NewModule starts a fixed pool of mirroring workers. Non-positive values fall
-// back to defaults: a pool of zero workers would silently drop every job.
-func NewModule(workers, queueSize int, mirrorMetrics *metrics.MirrorMetrics) *MirrorModule {
+// back to defaults.
+func NewPool(workers, queueSize int, mirrorMetrics *metrics.MirrorMetrics) *Pool {
 	if workers <= 0 {
 		workers = defaultWorkers
 	}
@@ -70,77 +65,75 @@ func NewModule(workers, queueSize int, mirrorMetrics *metrics.MirrorMetrics) *Mi
 		queueSize = defaultQueueSize
 	}
 
-	m := &MirrorModule{
+	p := &Pool{
 		client:  &http.Client{Timeout: mirrorTimeout},
-		queue:   make(chan MirrorJob, queueSize),
+		queue:   make(chan Job, queueSize),
 		metrics: mirrorMetrics,
 	}
 
 	for range workers {
-		m.wg.Add(1)
-		go m.worker()
+		p.wg.Add(1)
+		go p.worker()
 	}
-	return m
+	return p
 }
 
-func (m *MirrorModule) record(result string) {
-	if m.metrics != nil {
-		m.metrics.Observe(result)
+func (p *Pool) record(result string) {
+	if p.metrics != nil {
+		p.metrics.Observe(result)
 	}
 }
 
-// Stop drains the queue, waits for in-flight mirrors, and is safe to call more
-// than once.
-func (m *MirrorModule) Stop() {
-	m.mu.Lock()
-	if m.stopped {
-		m.mu.Unlock()
+func (p *Pool) Stop() {
+	p.mu.Lock()
+	if p.stopped {
+		p.mu.Unlock()
 		return
 	}
-	m.stopped = true
-	close(m.queue)
-	m.mu.Unlock()
+	p.stopped = true
+	close(p.queue)
+	p.mu.Unlock()
 
 	slog.Info("closing mirroring module")
-	m.wg.Wait()
+	p.wg.Wait()
 }
 
 // TrySubmit enqueues a job without blocking the caller. A full queue, or a
 // module that has already stopped, counts as a drop.
-func (m *MirrorModule) TrySubmit(j MirrorJob) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+func (p *Pool) TrySubmit(j Job) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 
-	if m.stopped {
-		m.record(metrics.MirrorDropped)
+	if p.stopped {
+		p.record(metrics.MirrorDropped)
 		return
 	}
 
 	select {
-	case m.queue <- j:
+	case p.queue <- j:
 	default:
-		m.record(metrics.MirrorDropped)
+		p.record(metrics.MirrorDropped)
 	}
 }
 
-func (m *MirrorModule) worker() {
-	defer m.wg.Done()
-	for j := range m.queue {
+func (p *Pool) worker() {
+	defer p.wg.Done()
+	for j := range p.queue {
 		for _, t := range j.targets {
 			if !sample(t.Ratio, rand.Float64()) {
 				continue
 			}
-			if err := m.send(j, t); err != nil {
+			if err := p.send(j, t); err != nil {
 				slog.Warn("mirror request failed", "mirror", t.URL.String(), "error", err)
-				m.record(metrics.MirrorFailed)
+				p.record(metrics.MirrorFailed)
 				continue
 			}
-			m.record(metrics.MirrorSent)
+			p.record(metrics.MirrorSent)
 		}
 	}
 }
 
-func (m *MirrorModule) send(j MirrorJob, t MirrorTarget) error {
+func (p *Pool) send(j Job, t Target) error {
 	u := *t.URL
 	u.Path = j.path
 	u.RawQuery = j.rawQuery
@@ -152,19 +145,18 @@ func (m *MirrorModule) send(j MirrorJob, t MirrorTarget) error {
 	req.Header = j.header.Clone()
 	removeHopByHopHeaders(req.Header)
 
-	resp, err := m.client.Do(req)
+	resp, err := p.client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
 	// The body has to be drained for the connection to be reused.
-	_, _ = io.Copy(io.Discard, resp.Body)
+	io.Copy(io.Discard, resp.Body)
 
 	return nil
 }
 
-// sample reports whether a request is mirrored, given a random value in [0, 1).
 func sample(ratio, rnd float64) bool {
 	switch {
 	case ratio <= 0:
@@ -190,8 +182,6 @@ var hopByHopHeaders = []string{
 	"Upgrade",
 }
 
-// removeHopByHopHeaders drops hop-by-hop headers, including any header the
-// Connection field names as hop-by-hop for this message.
 func removeHopByHopHeaders(h http.Header) {
 	for _, value := range h["Connection"] {
 		for _, name := range strings.Split(value, ",") {
