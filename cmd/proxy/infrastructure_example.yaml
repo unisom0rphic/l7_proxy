@@ -1,0 +1,21 @@
+net-timeouts-s:
+  transport:
+    tcp: 5
+    keep-alive: 30
+    tls: 5
+    response-header: 10
+    idle-conn: 90
+  server:
+    context: 30
+    read-header: 5
+    idle: 60
+
+connection-pool:
+  max-idle-conns: 1000
+  max-idle-conns-per-host: 1000
+
+mirroring:
+  workers: 10
+  queue-size: 100
+
+port: "8080"

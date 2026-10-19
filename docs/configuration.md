@@ -7,6 +7,9 @@ Configuration is split into two files:
 - **`routes.yaml`** - Routing configuration (hot-reloadable)
   - Passed via `ROUTES_CONFIG_PATH` environment variable (default: `routes.yaml`)
 
+All keys are `kebab-case`. Unknown keys are rejected at load time with a parse
+error, so a typo never silently turns into a zero value.
+
 ---
 
 ## Infrastructure Config (`infrastructure.yaml`)
@@ -15,44 +18,44 @@ Configuration is split into two files:
 
 | Key | Type | Required | Description |
 |---|---|---|---|
-| `net_timeouts_s` | object | no | Network timeouts in seconds. |
-| `connection_pool` | object | no | HTTP transport connection pool settings. |
+| `net-timeouts-s` | object | no | Network timeouts in seconds. |
+| `connection-pool` | object | no | HTTP transport connection pool settings. |
 | `mirroring` | object | no | Mirroring worker and queue configuration. |
-| `port` | string | no | Server port. Default: `8080`. |
+| `port` | string | no | Server listen port. The example config sets `"8080"`. |
 
-### `net_timeouts_s`
+### `net-timeouts-s`
 
-#### `net_timeouts_s.transport`
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `tcp` | int (s) | - | TCP dial timeout. |
-| `keep_alive` | int (s) | - | TCP keep-alive interval. |
-| `tls` | int (s) | - | TLS handshake timeout. |
-| `response_header` | int (s) | - | Time to wait for response headers. |
-| `idle_conn` | int (s) | - | Idle connection keep-alive. |
-
-#### `net_timeouts_s.server`
+#### `net-timeouts-s.transport`
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `context` | int (s) | - | Per-request context timeout. |
-| `read_header` | int (s) | - | Time to read request headers. |
-| `idle` | int (s) | - | Idle connection timeout. |
+| `tcp` | int (s) | 0 (no timeout) | TCP dial timeout. |
+| `keep-alive` | int (s) | 0 (Go default) | TCP keep-alive interval. |
+| `tls` | int (s) | 0 (no timeout) | TLS handshake timeout. |
+| `response-header` | int (s) | 0 (no timeout) | Time to wait for response headers. |
+| `idle-conn` | int (s) | 0 (no timeout) | Idle connection keep-alive. |
 
-### `connection_pool`
+#### `net-timeouts-s.server`
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `max_idle_conns` | int | 1000 | Maximum idle connections across all hosts. |
-| `max_idle_conns_per_host` | int | 1000 | Maximum idle connections per host. |
+| `context` | int (s) | - | Per-request context timeout. Must be greater than 0: a zero deadline cancels every request immediately. |
+| `read-header` | int (s) | 0 (no timeout) | Time to read request headers. |
+| `idle` | int (s) | 0 (Go default) | Idle connection timeout. |
+
+### `connection-pool`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `max-idle-conns` | int | 0 (no limit) | Maximum idle connections across all hosts. |
+| `max-idle-conns-per-host` | int | 0 (Go default) | Maximum idle connections per host. |
 
 ### `mirroring`
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `workers` | int | 10 | Number of mirroring worker goroutines. |
-| `queue_size` | int | 100 | Size of the mirroring job queue. |
+| `workers` | int | 0 (disabled) | Number of mirroring worker goroutines. |
+| `queue-size` | int | 0 (disabled) | Size of the mirroring job queue. |
 
 ---
 
@@ -70,8 +73,8 @@ Configuration is split into two files:
 | Key | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes | Unique upstream name. |
-| `host` | string | yes | Base URL, must include scheme and port (`http://host:3001`). No query or fragment. |
-| `timeout_ms` | int (ms) | yes | Request timeout to this upstream. |
+| `host` | string | yes | Base URL, must include scheme and port (`http://host:3001`). No path, query, or fragment. |
+| `timeout-ms` | int (ms) | yes | Request timeout to this upstream. |
 
 ### `routes[]`
 
@@ -79,7 +82,7 @@ Configuration is split into two files:
 |---|---|---|---|
 | `rules` | object | yes | Matchers for this route. |
 | `upstream` | string | yes | Name of the target upstream. Must exist in `upstreams`. |
-| `mirror` | object | no | Mirror configuration. |
+| `mirrors` | list | no | Mirror targets for this route. |
 
 #### `routes[].rules`
 
@@ -89,16 +92,30 @@ All fields are AND'ed. Multiple values within one field are OR'ed.
 |---|---|---|---|
 | `path` | string | one of | Exact path match. Mutually exclusive with `path-prefix`. Must start with `/`. |
 | `path-prefix` | string | one of | Prefix match. Mutually exclusive with `path`. Must start with `/`. |
-| `rewrite` | string | will use `path`/`path-prefix` value if not set | Rewrite path. Must start with `/`, no scheme or host. |
-| `method` | string | no | HTTP method (GET, POST, …). |
-| `headers` | map | no | Header existence check. Keys must be valid header names. |
+| `rewrite` | string | no | Outbound path base. Defaults to the matched `path`/`path-prefix`. Must start with `/`, no scheme or host. The unmatched remainder of a prefix match is appended. |
+| `method` | string | no | HTTP method, uppercase (GET, POST, …). |
+| `headers` | list | no | Header matchers, see below. |
+| `hosts` | list | no | Request `Host` values to match. A leading `*.` wildcard (`*.example.com`) matches exactly one or more leading labels. Ports are not allowed. |
+| `client-cidrs` | list | no | Source IP ranges in CIDR notation (`172.16.0.0/12`). Matched against the peer address. |
 
-#### `routes[].mirror`
+##### `routes[].rules.headers[]`
 
 | Key | Type | Required | Description |
 |---|---|---|---|
-| `upstream` | string | yes | Mirror upstream name. Must exist in `upstreams`; no cycles allowed. |
-| `ratio` | float | no | Fraction of requests mirrored, `[0, 1]`. Default `0`. |
+| `name` | string | yes | Header name. Must be a valid RFC 7230 token. Unique within a route. |
+| `op` | string | no | One of `present`, `equals`, `prefix`, `contains`. Inferred when omitted: `present` if `value` is empty, otherwise `equals`. |
+| `value` | string | with `op` | Comparison value. Forbidden for `op: present`, required for the other ops. |
+
+A rule matches if **any** value of the header satisfies the op. Two matchers for
+the same header name on one route are rejected: headers are AND'ed, so the
+author almost certainly meant OR, which needs separate routes.
+
+#### `routes[].mirrors[]`
+
+| Key | Type | Required | Description |
+|---|---|---|---|
+| `upstream` | string | yes | Mirror upstream name. Must exist in `upstreams`, must differ from the route's own upstream, and must not create a mirror cycle. |
+| `ratio` | float | no | Fraction of requests mirrored, `[0, 1]`. `0` mirrors nothing. |
 
 ---
 

@@ -57,21 +57,21 @@ Example routing config (`routes.yaml`):
 upstreams:
   - name: users-prod
     host: http://users-prod:3001
-    timeout_ms: 2000
+    timeout-ms: 2000
   - name: users-test
     host: http://users-test:3002
-    timeout_ms: 2000
+    timeout-ms: 2000
   - name: orders
     host: http://orders:3003
-    timeout_ms: 2000
+    timeout-ms: 2000
 
 routes:
   - rules:
       path: /api/users
     upstream: users-prod
-    mirror:
-      upstream: users-test
-      ratio: 0.2
+    mirrors:
+      - upstream: users-test
+        ratio: 0.2
 
   - rules:
       path-prefix: /orders

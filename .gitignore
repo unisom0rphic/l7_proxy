@@ -1,7 +1,9 @@
 /bin
+*.exe
 *.log
 *.yaml
-!config_example.yaml
+!routes_example.yaml
+!infrastructure_example.yaml
 bench-*/
 cmd/proxy/proxy
 coverage.out

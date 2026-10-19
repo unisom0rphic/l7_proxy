@@ -445,3 +445,25 @@ routes:
 		t.Errorf("route.upstream: want a, got %q", rt.Upstream)
 	}
 }
+
+func TestParseConfig_RejectsUnknownFields(t *testing.T) {
+	text := `upstreams:
+  - name: a
+    host: http://srv-a:1111
+    timeout_ms: 300
+routes:
+  - rules:
+      path-prefix: /v1
+    upstream: a
+`
+	if _, err := ParseConfig(writeTmpConfig(t, text)); err == nil {
+		t.Fatal("expected an unknown-field error for timeout_ms")
+	}
+}
+
+func TestParseInfrastructureConfig_RejectsUnknownFields(t *testing.T) {
+	path := writeTmpConfig(t, "mirroring:\n  queue_size: 10\n")
+	if _, err := ParseInfrastructureConfig(path); err == nil {
+		t.Fatal("expected an unknown-field error for queue_size")
+	}
+}

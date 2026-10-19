@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -630,35 +631,45 @@ func findCycle(adj map[string][]string) []string {
 	return nil
 }
 
-func ParseConfig(configPath string) (*Config, error) {
-	yamlFile, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil, fmt.Errorf("error reading config (%s): %v\n", configPath, err)
+// decodeStrict decodes a single YAML document and fails on unknown fields, so
+// misspelled keys surface as errors instead of silently loading a zero value.
+func decodeStrict(r io.Reader, v any) error {
+	dec := yaml.NewDecoder(r)
+	dec.KnownFields(true)
+	if err := dec.Decode(v); err != nil {
+		return err
 	}
+	return nil
+}
+
+func ParseConfig(configPath string) (*Config, error) {
+	f, err := os.Open(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("error reading config (%s): %w", configPath, err)
+	}
+	defer f.Close()
 
 	var config Config
-	err = yaml.Unmarshal(yamlFile, &config)
-	if err != nil {
-		return nil, fmt.Errorf("failed yaml umarshal (%s): %v\n", configPath, err)
+	if err := decodeStrict(f, &config); err != nil {
+		return nil, fmt.Errorf("failed yaml unmarshal (%s): %w", configPath, err)
 	}
-	err = config.mapNamesToHosts()
-	if err != nil {
-		return nil, fmt.Errorf("building name->host map failed (%s): %v\n", configPath, err)
+	if err := config.mapNamesToHosts(); err != nil {
+		return nil, fmt.Errorf("building name->host map failed (%s): %w", configPath, err)
 	}
 
 	return &config, nil
 }
 
 func ParseInfrastructureConfig(configPath string) (*InfrastructureConfig, error) {
-	yamlFile, err := os.ReadFile(configPath)
+	f, err := os.Open(configPath)
 	if err != nil {
-		return nil, fmt.Errorf("error reading infrastructure config (%s): %v", configPath, err)
+		return nil, fmt.Errorf("error reading infrastructure config (%s): %w", configPath, err)
 	}
+	defer f.Close()
 
 	var config InfrastructureConfig
-	err = yaml.Unmarshal(yamlFile, &config)
-	if err != nil {
-		return nil, fmt.Errorf("failed yaml unmarshal (%s): %v", configPath, err)
+	if err := decodeStrict(f, &config); err != nil {
+		return nil, fmt.Errorf("failed yaml unmarshal (%s): %w", configPath, err)
 	}
 
 	return &config, nil

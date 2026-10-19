@@ -29,19 +29,19 @@ import (
 upstreams:
   - name: users-prod
     host: http://localhost:3001
-    timeout_ms: 2000                  # short on purpose, for timeout tests
+    timeout-ms: 2000                  # short on purpose, for timeout tests
   - name: dead
     host: http://localhost:1          # port 1 - guaranteed connection refused
-    timeout_ms: 1000
+    timeout-ms: 1000
 
 routes:
-  - rules: { path_prefix: /api }
+  - rules: { path-prefix: /api }
     upstream: users-prod
-  - rules: { path_prefix: /hang-body }  # longer prefix beats /hang
+  - rules: { path-prefix: /hang-body }  # longer prefix beats /hang
     upstream: users-prod
-  - rules: { path_prefix: /hang }
+  - rules: { path-prefix: /hang }
     upstream: users-prod
-  - rules: { path_prefix: /dead }
+  - rules: { path-prefix: /dead }
     upstream: dead
 */
 
