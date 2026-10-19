@@ -32,8 +32,11 @@ type Router struct {
 func (r *Router) Wait() { r.wg.Wait() }
 
 type Decision struct {
-	Target  *url.URL
-	Mirrors []mirroring.MirrorTarget
+	// Upstream is the winning route's upstream name, used as a bounded metric
+	// label instead of the request path.
+	Upstream string
+	Target   *url.URL
+	Mirrors  []mirroring.MirrorTarget
 }
 
 type candidate struct {
@@ -252,7 +255,7 @@ func finalize(cfg *config.Config, c candidate, r *http.Request) (Decision, error
 	}
 
 	slog.Debug("decideRoute: route found", "host", host, "mirrors", len(mirrors))
-	return Decision{Target: target, Mirrors: mirrors}, nil
+	return Decision{Upstream: c.route.Upstream, Target: target, Mirrors: mirrors}, nil
 }
 
 func resolveHost(cfg *config.Config, name string) (*url.URL, error) {

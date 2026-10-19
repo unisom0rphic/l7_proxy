@@ -7,7 +7,24 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/unisom0rphic/l7proxy/internal/metrics"
 )
+
+func newTestModule(t *testing.T, workers, queueSize int) (*MirrorModule, *metrics.MirrorMetrics) {
+	t.Helper()
+
+	mc := metrics.NewMirrorMetrics()
+	m := NewModule(workers, queueSize, mc)
+	t.Cleanup(m.Stop)
+	return m, mc
+}
+
+func counterValue(t *testing.T, mc *metrics.MirrorMetrics, result string) float64 {
+	t.Helper()
+	return testutil.ToFloat64(mc.RequestsTotal.WithLabelValues(result))
+}
 
 func TestSample(t *testing.T) {
 	tests := []struct {
@@ -74,8 +91,7 @@ func TestMirrorSendsRequestShape(t *testing.T) {
 	got := make(chan mirrorRequest, 1)
 	target := newMirrorServer(t, got)
 
-	m := NewModule(1, 1)
-	defer m.Stop()
+	m, mc := newTestModule(t, 1, 1)
 
 	m.TrySubmit(NewJob(
 		http.MethodPost,
@@ -123,6 +139,13 @@ func TestMirrorSendsRequestShape(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("mirror never received the request")
 	}
+
+	// Stop drains the queue and waits for in-flight mirrors, so the counters
+	// have settled by the time it returns.
+	m.Stop()
+	if n := counterValue(t, mc, metrics.MirrorSent); n != 1 {
+		t.Errorf("sent: want 1, got %v", n)
+	}
 }
 
 func TestMirrorSkipsRatioZero(t *testing.T) {
@@ -130,8 +153,7 @@ func TestMirrorSkipsRatioZero(t *testing.T) {
 	target := newMirrorServer(t, got)
 
 	// Both jobs have to fit: TrySubmit drops rather than blocks on a full queue.
-	m := NewModule(1, 2)
-	defer m.Stop()
+	m, _ := newTestModule(t, 1, 2)
 
 	m.TrySubmit(NewJob(http.MethodGet, nil, http.Header{}, "/skipped", "",
 		[]MirrorTarget{{URL: target, Ratio: 0}}))
@@ -158,8 +180,7 @@ func TestMirrorFansOutToEveryTarget(t *testing.T) {
 		{URL: newMirrorServer(t, second), Ratio: 1},
 	}
 
-	m := NewModule(1, 1)
-	defer m.Stop()
+	m, _ := newTestModule(t, 1, 1)
 
 	m.TrySubmit(NewJob(http.MethodGet, nil, http.Header{}, "/api/x", "",
 		targets))
@@ -180,8 +201,7 @@ func TestNewModuleWithZeroValuesStillMirrors(t *testing.T) {
 	got := make(chan mirrorRequest, 1)
 	target := newMirrorServer(t, got)
 
-	m := NewModule(0, 0)
-	defer m.Stop()
+	m, _ := newTestModule(t, 0, 0)
 
 	if cap(m.queue) != defaultQueueSize {
 		t.Errorf("queue capacity: want %d, got %d", defaultQueueSize, cap(m.queue))
@@ -204,14 +224,14 @@ func TestStopIsIdempotentAndRejectsLateSubmits(t *testing.T) {
 	got := make(chan mirrorRequest, 1)
 	target := newMirrorServer(t, got)
 
-	m := NewModule(1, 1)
+	m, mc := newTestModule(t, 1, 1)
 	m.Stop()
 	m.Stop()
 
 	m.TrySubmit(NewJob(http.MethodGet, nil, http.Header{}, "/late", "",
 		[]MirrorTarget{{URL: target, Ratio: 1}}))
 
-	if n := m.dropped.Load(); n != 1 {
-		t.Errorf("dropped: want 1, got %d", n)
+	if n := counterValue(t, mc, metrics.MirrorDropped); n != 1 {
+		t.Errorf("dropped: want 1, got %v", n)
 	}
 }

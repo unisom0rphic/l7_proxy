@@ -57,6 +57,9 @@ func (p *L7Proxy) contextTimeout() time.Duration {
 // route is resolved once per request.
 type decisionKey struct{}
 
+// upstreamUnmatched labels requests that matched no route.
+const upstreamUnmatched = "unmatched"
+
 func (p *L7Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
@@ -64,7 +67,7 @@ func (p *L7Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Debug("no route for request", "method", r.Method, "path", r.URL.Path, "error", err)
 		http.NotFound(w, r)
-		p.observe(r, http.StatusNotFound, start)
+		p.observe(r.Method, upstreamUnmatched, http.StatusNotFound, start)
 		return
 	}
 
@@ -76,12 +79,12 @@ func (p *L7Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	p.rp.ServeHTTP(wrapped, r.WithContext(ctx))
 
-	p.observe(r, wrapped.statusCode, start)
+	p.observe(r.Method, decision.Upstream, wrapped.statusCode, start)
 }
 
-func (p *L7Proxy) observe(r *http.Request, status int, start time.Time) {
+func (p *L7Proxy) observe(method, upstream string, status int, start time.Time) {
 	if p.metrics != nil {
-		p.metrics.Observe(r.Method, r.URL.Path, status, time.Since(start))
+		p.metrics.Observe(method, upstream, status, time.Since(start))
 	}
 }
 

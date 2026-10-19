@@ -10,7 +10,7 @@ An L7 HTTP reverse proxy in Go: routing, hot-reloadable config, and traffic mirr
 - Configurable transport and server timeouts
 - Graceful shutdown on `SIGTERM`
 - Non-blocking traffic mirroring (**in progress**, [Issue #1](https://github.com/unisom0rphic/l7_proxy/issues/1))
-- Prometheus metrics: requests, latency, failed config reloads
+- Prometheus metrics: requests, latency, mirroring outcomes, failed config reloads
 
 ## Requirements
 

@@ -9,8 +9,9 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"github.com/unisom0rphic/l7proxy/internal/metrics"
 )
 
 // MirrorTarget is one destination a request may be copied to. Ratio is the
@@ -50,19 +51,18 @@ const (
 )
 
 type MirrorModule struct {
-	client *http.Client
-	queue  chan MirrorJob
-	wg     sync.WaitGroup
+	client  *http.Client
+	queue   chan MirrorJob
+	wg      sync.WaitGroup
+	metrics *metrics.MirrorMetrics
 
 	mu      sync.RWMutex
 	stopped bool
-
-	sent, failed, dropped atomic.Uint64
 }
 
 // NewModule starts a fixed pool of mirroring workers. Non-positive values fall
 // back to defaults: a pool of zero workers would silently drop every job.
-func NewModule(workers, queueSize int) *MirrorModule {
+func NewModule(workers, queueSize int, mirrorMetrics *metrics.MirrorMetrics) *MirrorModule {
 	if workers <= 0 {
 		workers = defaultWorkers
 	}
@@ -71,8 +71,9 @@ func NewModule(workers, queueSize int) *MirrorModule {
 	}
 
 	m := &MirrorModule{
-		client: &http.Client{Timeout: mirrorTimeout},
-		queue:  make(chan MirrorJob, queueSize),
+		client:  &http.Client{Timeout: mirrorTimeout},
+		queue:   make(chan MirrorJob, queueSize),
+		metrics: mirrorMetrics,
 	}
 
 	for range workers {
@@ -80,6 +81,12 @@ func NewModule(workers, queueSize int) *MirrorModule {
 		go m.worker()
 	}
 	return m
+}
+
+func (m *MirrorModule) record(result string) {
+	if m.metrics != nil {
+		m.metrics.Observe(result)
+	}
 }
 
 // Stop drains the queue, waits for in-flight mirrors, and is safe to call more
@@ -105,14 +112,14 @@ func (m *MirrorModule) TrySubmit(j MirrorJob) {
 	defer m.mu.RUnlock()
 
 	if m.stopped {
-		m.dropped.Add(1)
+		m.record(metrics.MirrorDropped)
 		return
 	}
 
 	select {
 	case m.queue <- j:
 	default:
-		m.dropped.Add(1)
+		m.record(metrics.MirrorDropped)
 	}
 }
 
@@ -125,10 +132,10 @@ func (m *MirrorModule) worker() {
 			}
 			if err := m.send(j, t); err != nil {
 				slog.Warn("mirror request failed", "mirror", t.URL.String(), "error", err)
-				m.failed.Add(1)
+				m.record(metrics.MirrorFailed)
 				continue
 			}
-			m.sent.Add(1)
+			m.record(metrics.MirrorSent)
 		}
 	}
 }

@@ -7,13 +7,20 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// Mirroring outcomes, used as the result label of MirrorRequestsTotal.
+const (
+	MirrorSent    = "sent"
+	MirrorFailed  = "failed"
+	MirrorDropped = "dropped"
+)
+
 var (
 	HTTPRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "http_requests_total",
 			Help: "Total number of HTTP requests processed",
 		},
-		[]string{"method", "path", "status"},
+		[]string{"method", "upstream", "status"},
 	)
 
 	HTTPRequestDuration = prometheus.NewHistogramVec(
@@ -22,7 +29,7 @@ var (
 			Help:    "Histogram of HTTP request latencies",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"method", "path", "status"},
+		[]string{"method", "upstream", "status"},
 	)
 
 	ConfigReloadErrorsTotal = prometheus.NewCounterVec(
@@ -32,7 +39,21 @@ var (
 		},
 		[]string{"reason"},
 	)
+
+	MirrorRequestsTotal = newMirrorRequestsTotal()
 )
+
+// newMirrorRequestsTotal is a constructor so tests can build a counter set that
+// does not collide with the registered one.
+func newMirrorRequestsTotal() *prometheus.CounterVec {
+	return prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mirror_requests_total",
+			Help: "Total number of mirrored requests by result",
+		},
+		[]string{"result"},
+	)
+}
 
 type RequestMetrics struct {
 	RequestsTotal   *prometheus.CounterVec
@@ -44,8 +65,25 @@ var Default = &RequestMetrics{
 	RequestDuration: HTTPRequestDuration,
 }
 
-func (m *RequestMetrics) Observe(method, path string, status int, d time.Duration) {
+// Observe records a single request. upstream is the matched upstream name
+// rather than the request path: names are bounded by the config, paths are not.
+func (m *RequestMetrics) Observe(method, upstream string, status int, d time.Duration) {
 	s := strconv.Itoa(status)
-	m.RequestsTotal.WithLabelValues(method, path, s).Inc()
-	m.RequestDuration.WithLabelValues(method, path, s).Observe(d.Seconds())
+	m.RequestsTotal.WithLabelValues(method, upstream, s).Inc()
+	m.RequestDuration.WithLabelValues(method, upstream, s).Observe(d.Seconds())
+}
+
+type MirrorMetrics struct {
+	RequestsTotal *prometheus.CounterVec
+}
+
+var Mirror = &MirrorMetrics{RequestsTotal: MirrorRequestsTotal}
+
+// NewMirrorMetrics returns an unregistered counter set, for tests.
+func NewMirrorMetrics() *MirrorMetrics {
+	return &MirrorMetrics{RequestsTotal: newMirrorRequestsTotal()}
+}
+
+func (m *MirrorMetrics) Observe(result string) {
+	m.RequestsTotal.WithLabelValues(result).Inc()
 }

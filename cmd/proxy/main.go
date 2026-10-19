@@ -82,11 +82,13 @@ func main() {
 	proxyMirror := mirroring.NewModule(
 		infraConfig.Mirroring.Workers,
 		infraConfig.Mirroring.QueueSize,
+		metrics.Mirror,
 	)
 
 	prometheus.MustRegister(metrics.HTTPRequestsTotal)
 	prometheus.MustRegister(metrics.HTTPRequestDuration)
 	prometheus.MustRegister(metrics.ConfigReloadErrorsTotal)
+	prometheus.MustRegister(metrics.MirrorRequestsTotal)
 
 	// Port from infrastructure config or env var override
 	port := getenv("PORT", infraConfig.Port)
