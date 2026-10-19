@@ -374,9 +374,13 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 		}
 		defer configCooldown.Stop()
 		onCoolDown := false
+		pendingReload := ""
 
 		reload := func(source string) {
 			if onCoolDown {
+				// Cannot reload yet, but the change must not be lost: the
+				// cooldown ends with a reload of the newest state.
+				pendingReload = source
 				return
 			}
 			router.reloadConfig(source)
@@ -427,6 +431,11 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 				}
 			case <-configCooldown.C:
 				onCoolDown = false
+				if pendingReload != "" {
+					source := pendingReload
+					pendingReload = ""
+					reload(source)
+				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
 					return
