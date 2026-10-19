@@ -1,8 +1,8 @@
 version: "3"
 
 vars:
-  CONFIG_LOCAL: ./cmd/proxy/config_local.yaml
-  CONFIG_TEST: ./cmd/proxy/config_test.yaml
+  INFRA_CONFIG_LOCAL: ./cmd/proxy/infrastructure.yaml
+  ROUTES_CONFIG_LOCAL: ./cmd/proxy/routes.yaml
 
 tasks:
   default:
@@ -10,28 +10,28 @@ tasks:
 
   run:proxy:
     desc: Run proxy locally
-    cmd: CONFIG_PATH={{.CONFIG_LOCAL}} go run ./cmd/proxy
+    cmd: INFRA_CONFIG_PATH={{.INFRA_CONFIG_LOCAL}} ROUTES_CONFIG_PATH={{.ROUTES_CONFIG_LOCAL}} go run ./cmd/proxy
 
   up:local:
     desc: Start proxy locally and backend containers in docker
-    cmds: 
+    cmds:
       - docker compose up -d users-prod users-test orders
-      - CONFIG_PATH={{.CONFIG_LOCAL}} go run ./cmd/proxy 
+      - INFRA_CONFIG_PATH={{.INFRA_CONFIG_LOCAL}} ROUTES_CONFIG_PATH={{.ROUTES_CONFIG_LOCAL}} go run ./cmd/proxy
 
   test:
     desc: Run tests
-    cmd: CONFIG_PATH={{.CONFIG_TEST}} go test ./cmd/... ./internal/... -count=1
+    cmd: go test ./cmd/... ./internal/... -count=1
 
   test:deep:
-    desc: Run exhaustive testint suite
+    desc: Run exhaustive testing suite
     cmd: >
-          CONFIG_PATH={{.CONFIG_TEST}} go test ./cmd/... ./internal/... 
-          -count=1 
-          -v 
-          -race 
-          -covermode=atomic 
-          -coverprofile=coverage.out 
-          -failfast 
+          go test ./cmd/... ./internal/...
+          -count=1
+          -v
+          -race
+          -covermode=atomic
+          -coverprofile=coverage.out
+          -failfast
           -timeout=5m
 
   up:

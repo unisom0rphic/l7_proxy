@@ -12,6 +12,7 @@ import (
 	_ "net/http/pprof"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/unisom0rphic/l7proxy/internal/config"
 	"github.com/unisom0rphic/l7proxy/internal/metrics"
 	"github.com/unisom0rphic/l7proxy/internal/mirroring"
 	"github.com/unisom0rphic/l7proxy/internal/proxy"
@@ -53,25 +54,45 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	configPath := getenv("CONFIG_PATH", "config.yaml")
-	proxyRouter, err := routing.CreateFromConfig(ctx, configPath)
+	// Parse infrastructure config
+	infraConfigPath := getenv("INFRA_CONFIG_PATH", "infrastructure.yaml")
+	infraConfig, err := config.ParseInfrastructureConfig(infraConfigPath)
 	if err != nil {
-		slog.Error("Unable to create router", "error", err)
-		panic("Incorrect router configuration, unable to start the server")
+		slog.Error("Unable to parse infrastructure config", "error", err)
+		panic("Incorrect infrastructure configuration, unable to start the server")
 	}
 
-	const (
-		numWorkers = 10
-		queueSize  = 100
-	)
+	errs := infraConfig.Validate()
+	if len(errs) > 0 {
+		for _, e := range errs {
+			slog.Error("infrastructure config validation error", "err", e)
+		}
+		panic("Invalid infrastructure configuration")
+	}
 
-	proxyMirror := mirroring.NewModule(numWorkers, queueSize)
+	// Parse routing config
+	routesConfigPath := getenv("ROUTES_CONFIG_PATH", "routes.yaml")
+	proxyRouter, err := routing.CreateFromConfig(ctx, routesConfigPath)
+	if err != nil {
+		slog.Error("Unable to create router", "error", err)
+		panic("Incorrect routing configuration, unable to start the server")
+	}
+
+	// Create mirror module with config values
+	proxyMirror := mirroring.NewModule(
+		infraConfig.Mirroring.Workers,
+		infraConfig.Mirroring.QueueSize,
+	)
 
 	prometheus.MustRegister(metrics.HTTPRequestsTotal)
 	prometheus.MustRegister(metrics.HTTPRequestDuration)
 	prometheus.MustRegister(metrics.ConfigReloadErrorsTotal)
 
-	port := getenv("PORT", "8080")
-	p := proxy.New(proxyRouter, port, metrics.Default, proxyMirror)
+	// Port from infrastructure config or env var override
+	port := getenv("PORT", infraConfig.Port)
+	if port != "" {
+		infraConfig.Port = port
+	}
+	p := proxy.New(proxyRouter, infraConfig, metrics.Default, proxyMirror)
 	p.Run(ctx)
 }

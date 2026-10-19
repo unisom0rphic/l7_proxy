@@ -37,3 +37,4 @@ An ADR should fit on one page.
 | [0008](0008-yaml-config.md) | Accepted | YAML as the config format |
 | [0009](0009-hot-reload-mechanism.md) | Accepted | fsnotify + debounce for hot-reload |
 | [0010](0010-panic-on-missing-config.md) | Accepted | Panic on missing config file |
+| [0011](0011-separate-routing-infrastructure-config.md) | Accepted | Two files for config |

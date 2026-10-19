@@ -462,13 +462,7 @@ func TestDecideRoute_RewritePrefix(t *testing.T) {
 // in-place (os.WriteFile): rename-overwrite kills the watcher attached to the
 // file.
 
-const timeoutsYAML = `net-timeouts-s:
-  transport: {tcp: 5, keep-alive: 5, tls: 5, response-header: 5, idle-conn: 30}
-  server: {context: 10, read-header: 5, idle: 30}
-`
-
-const cfgV1YAML = timeoutsYAML + `
-upstreams:
+const cfgV1YAML = `upstreams:
   - name: a
     host: http://srv-a:1111
     timeout-ms: 300
@@ -478,8 +472,7 @@ routes:
     upstream: a
 `
 
-const cfgV2YAML = timeoutsYAML + `
-upstreams:
+const cfgV2YAML = `upstreams:
   - name: a
     host: http://srv-a:1111
     timeout-ms: 300
@@ -496,8 +489,7 @@ routes:
 `
 
 // Semantically invalid: route references a non-existent upstream.
-const cfgUnknownUpstreamYAML = timeoutsYAML + `
-upstreams:
+const cfgUnknownUpstreamYAML = `upstreams:
   - name: a
     host: http://srv-a:1111
     timeout-ms: 300

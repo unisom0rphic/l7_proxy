@@ -29,13 +29,29 @@ Or locally:
 ```bash
 cd ./cmd/proxy
 go build
-cp ./config_example.yaml ./config.yaml
-CONFIG_PATH=config.yaml ./proxy
+cp ./infrastructure_example.yaml ./infrastructure.yaml
+cp ./routes_example.yaml ./routes.yaml
+INFRA_CONFIG_PATH=infrastructure.yaml ROUTES_CONFIG_PATH=routes.yaml ./proxy
 ```
 
-Config example: [`cmd/proxy/config_example.yaml`](./cmd/proxy/config_example.yaml).
+Config examples: [`cmd/proxy/infrastructure_example.yaml`](./cmd/proxy/infrastructure_example.yaml) and [`cmd/proxy/routes_example.yaml`](./cmd/proxy/routes_example.yaml).
 
 ## Configuration
+
+Configuration is split into two files:
+
+- **`infrastructure.yaml`** - Infrastructure settings (requires restart)
+  - Network timeouts (transport & server)
+  - Connection pool settings
+  - Mirroring worker/queue configuration
+  - Server port
+
+- **`routes.yaml`** - Routing configuration (hot-reloadable)
+  - Upstreams
+  - Routes
+  - Mirroring targets
+
+Example routing config (`routes.yaml`):
 
 ```yaml
 upstreams:
@@ -70,7 +86,9 @@ The list of possible configuration options is listed in [`docs/configuration`](d
 
 ## Hot Reload
 
-`fsnotify` or `SIGHUP` + debounce. Config is swapped via `atomic.Pointer[Config]`. Missing file at startup panics; missing file at runtime keeps the last known-good config.
+Routing configuration (`routes.yaml`) is hot-reloadable via `fsnotify` or `SIGHUP` + debounce. Config is swapped via `atomic.Pointer[Config]`. Missing file at startup panics; missing file at runtime keeps the last known-good config.
+
+Infrastructure configuration (`infrastructure.yaml`) requires a restart to apply changes.
 
 ## Testing
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/unisom0rphic/l7proxy/internal/config"
 	"github.com/unisom0rphic/l7proxy/internal/metrics"
 	"github.com/unisom0rphic/l7proxy/internal/mirroring"
 	"github.com/unisom0rphic/l7proxy/internal/routing"
@@ -25,6 +26,7 @@ type L7Proxy struct {
 	server       *http.Server
 	mux          *http.ServeMux
 	metrics      *metrics.RequestMetrics
+	infraConfig  *config.InfrastructureConfig
 }
 
 type responseWriter struct {
@@ -48,7 +50,7 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 func (p *L7Proxy) toSec(d int) time.Duration { return time.Duration(d) * time.Second }
 
 func (p *L7Proxy) contextTimeout() time.Duration {
-	return p.toSec(p.router.Config().NetworkTimeoutsSec.Server.Context)
+	return p.toSec(p.infraConfig.NetworkTimeoutsSec.Server.Context)
 }
 
 func (p *L7Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -132,10 +134,11 @@ func (p *L7Proxy) modifyResponse(resp *http.Response) error {
 	return nil
 }
 
-func (p *L7Proxy) buildTransport() *http.Transport {
+func (p *L7Proxy) buildTransport(infraConfig *config.InfrastructureConfig) *http.Transport {
 	toSec := func(d int) time.Duration { return time.Duration(d) * time.Second }
 
-	timeoutsTransport := p.router.Config().NetworkTimeoutsSec.Transport
+	timeoutsTransport := infraConfig.NetworkTimeoutsSec.Transport
+	connPool := infraConfig.ConnectionPool
 	return &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   toSec(timeoutsTransport.TCP),
@@ -144,36 +147,37 @@ func (p *L7Proxy) buildTransport() *http.Transport {
 		TLSHandshakeTimeout:   toSec(timeoutsTransport.TLS),
 		ResponseHeaderTimeout: toSec(timeoutsTransport.ResponseHeader),
 		IdleConnTimeout:       toSec(timeoutsTransport.IdleConn),
-		MaxIdleConns:          1000,
-		MaxIdleConnsPerHost:   1000,
+		MaxIdleConns:          connPool.MaxIdleConns,
+		MaxIdleConnsPerHost:   connPool.MaxIdleConnsPerHost,
 		DisableKeepAlives:     false,
 		MaxConnsPerHost:       0,
 		ForceAttemptHTTP2:     true,
 	}
 }
 
-func New(r *routing.Router, port string, m *metrics.RequestMetrics, mm *mirroring.MirrorModule) *L7Proxy {
-	slog.Debug("CONFIG", "config", r.Config())
+func New(r *routing.Router, infraConfig *config.InfrastructureConfig, m *metrics.RequestMetrics, mm *mirroring.MirrorModule) *L7Proxy {
+	slog.Debug("INFRASTRUCTURE CONFIG", "config", infraConfig)
 
 	proxy := &L7Proxy{
 		router:       r,
 		metrics:      m,
 		mirrorModule: mm,
+		infraConfig:  infraConfig,
 	}
 
 	proxy.rp = &httputil.ReverseProxy{
 		Rewrite:        proxy.rewrite,
-		Transport:      proxy.buildTransport(),
+		Transport:      proxy.buildTransport(infraConfig),
 		ErrorHandler:   proxy.errorHandler,
 		ModifyResponse: proxy.modifyResponse,
 	}
 
 	proxy.setupMux()
 
-	timeoutsServer := proxy.router.Config().NetworkTimeoutsSec.Server
+	timeoutsServer := infraConfig.NetworkTimeoutsSec.Server
 
 	proxy.server = &http.Server{
-		Addr:              ":" + port,
+		Addr:              ":" + infraConfig.Port,
 		Handler:           proxy.mux,
 		ReadHeaderTimeout: proxy.toSec(timeoutsServer.ReadHeader),
 		IdleTimeout:       proxy.toSec(timeoutsServer.Idle),

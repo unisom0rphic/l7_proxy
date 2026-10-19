@@ -277,22 +277,6 @@ func TestValidate_RejectsBadTimeouts(t *testing.T) {
 	}{
 		{"upstream negative timeout_ms",
 			func(c *Config) { c.Upstreams[0].Timeout = -1 }},
-		{"transport negative tcp",
-			func(c *Config) { c.NetworkTimeoutsSec.Transport.TCP = -1 }},
-		{"transport negative keep_alive",
-			func(c *Config) { c.NetworkTimeoutsSec.Transport.KeepAlive = -1 }},
-		{"transport negative tls",
-			func(c *Config) { c.NetworkTimeoutsSec.Transport.TLS = -1 }},
-		{"transport negative response_header",
-			func(c *Config) { c.NetworkTimeoutsSec.Transport.ResponseHeader = -1 }},
-		{"transport negative idle_conn",
-			func(c *Config) { c.NetworkTimeoutsSec.Transport.IdleConn = -1 }},
-		{"server negative context",
-			func(c *Config) { c.NetworkTimeoutsSec.Server.Context = -1 }},
-		{"server negative read_header",
-			func(c *Config) { c.NetworkTimeoutsSec.Server.ReadHeader = -1 }},
-		{"server negative idle",
-			func(c *Config) { c.NetworkTimeoutsSec.Server.Idle = -1 }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -424,10 +408,7 @@ func TestParseConfig_BrokenYAML(t *testing.T) {
 }
 
 func TestParseConfig_Fields(t *testing.T) {
-	text := `net-timeouts-s:
-  transport: {tcp: 5, keep-alive: 5, tls: 5, response-header: 7, idle-conn: 30}
-  server: {context: 10, read-header: 5, idle: 30}
-upstreams:
+	text := `upstreams:
   - name: a
     host: http://srv-a:1111
     timeout-ms: 300
@@ -445,9 +426,6 @@ routes:
 		t.Fatal(err)
 	}
 
-	if cfg.NetworkTimeoutsSec.Transport.ResponseHeader != 7 {
-		t.Errorf("transport.response-header: want 7, got %d", cfg.NetworkTimeoutsSec.Transport.ResponseHeader)
-	}
 	if len(cfg.Upstreams) != 1 {
 		t.Fatalf("upstreams: want 1, got %d", len(cfg.Upstreams))
 	}

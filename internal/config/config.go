@@ -20,7 +20,7 @@ type TransportTimeouts struct {
 	IdleConn       int `yaml:"idle-conn"`
 }
 
-type ServerTimeoutes struct {
+type ServerTimeouts struct {
 	Context    int `yaml:"context"`
 	ReadHeader int `yaml:"read-header"`
 	Idle       int `yaml:"idle"`
@@ -80,11 +80,27 @@ type Route struct {
 	Mirrors  []Mirror `yaml:"mirrors"`
 }
 
-type Config struct {
+type ConnectionPool struct {
+	MaxIdleConns        int `yaml:"max-idle-conns"`
+	MaxIdleConnsPerHost int `yaml:"max-idle-conns-per-host"`
+}
+
+type MirroringConfig struct {
+	Workers   int `yaml:"workers"`
+	QueueSize int `yaml:"queue-size"`
+}
+
+type InfrastructureConfig struct {
 	NetworkTimeoutsSec struct {
 		Transport TransportTimeouts `yaml:"transport"`
-		Server    ServerTimeoutes   `yaml:"server"`
+		Server    ServerTimeouts   `yaml:"server"`
 	} `yaml:"net-timeouts-s"`
+	ConnectionPool ConnectionPool `yaml:"connection-pool"`
+	Mirroring      MirroringConfig `yaml:"mirroring"`
+	Port           string          `yaml:"port"`
+}
+
+type Config struct {
 	Upstreams  []Upstream          `yaml:"upstreams"`
 	Routes     []Route             `yaml:"routes"`
 	NameToHost map[string]*url.URL `yaml:"-"`
@@ -125,7 +141,6 @@ func (cfg *Config) Validate() []error {
 	var errs []error
 	errs = append(errs, validateUpstreams(cfg.Upstreams)...)
 	errs = append(errs, validateRoutes(cfg.Routes, cfg.Upstreams)...)
-	errs = append(errs, validateTimeouts(cfg)...)
 	errs = append(errs, validateMirrorCycles(cfg)...)
 	return errs
 }
@@ -466,7 +481,7 @@ func isTokenChar(c rune) bool {
 	return false
 }
 
-func validateTimeouts(cfg *Config) []error {
+func validateTimeouts(cfg *InfrastructureConfig) []error {
 	var errs []error
 	t := cfg.NetworkTimeoutsSec.Transport
 	s := cfg.NetworkTimeoutsSec.Server
@@ -495,6 +510,40 @@ func validateTimeouts(cfg *Config) []error {
 	if s.Idle < 0 {
 		errs = append(errs, fmt.Errorf("net-timeouts-s.server.idle must be >= 0, got %d", s.Idle))
 	}
+	return errs
+}
+
+func validateConnectionPool(cfg *InfrastructureConfig) []error {
+	var errs []error
+	cp := cfg.ConnectionPool
+
+	if cp.MaxIdleConns < 0 {
+		errs = append(errs, fmt.Errorf("connection-pool.max-idle-conns must be >= 0, got %d", cp.MaxIdleConns))
+	}
+	if cp.MaxIdleConnsPerHost < 0 {
+		errs = append(errs, fmt.Errorf("connection-pool.max-idle-conns-per-host must be >= 0, got %d", cp.MaxIdleConnsPerHost))
+	}
+	return errs
+}
+
+func validateMirroringConfig(cfg *InfrastructureConfig) []error {
+	var errs []error
+	mc := cfg.Mirroring
+
+	if mc.Workers < 0 {
+		errs = append(errs, fmt.Errorf("mirroring.workers must be >= 0, got %d", mc.Workers))
+	}
+	if mc.QueueSize < 0 {
+		errs = append(errs, fmt.Errorf("mirroring.queue-size must be >= 0, got %d", mc.QueueSize))
+	}
+	return errs
+}
+
+func (cfg *InfrastructureConfig) Validate() []error {
+	var errs []error
+	errs = append(errs, validateTimeouts(cfg)...)
+	errs = append(errs, validateConnectionPool(cfg)...)
+	errs = append(errs, validateMirroringConfig(cfg)...)
 	return errs
 }
 
@@ -595,6 +644,21 @@ func ParseConfig(configPath string) (*Config, error) {
 	err = config.mapNamesToHosts()
 	if err != nil {
 		return nil, fmt.Errorf("building name->host map failed (%s): %v\n", configPath, err)
+	}
+
+	return &config, nil
+}
+
+func ParseInfrastructureConfig(configPath string) (*InfrastructureConfig, error) {
+	yamlFile, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("error reading infrastructure config (%s): %v", configPath, err)
+	}
+
+	var config InfrastructureConfig
+	err = yaml.Unmarshal(yamlFile, &config)
+	if err != nil {
+		return nil, fmt.Errorf("failed yaml unmarshal (%s): %v", configPath, err)
 	}
 
 	return &config, nil

@@ -18,13 +18,13 @@ import (
 //
 //	1) proxy:   go run .
 //	2) backend: service exposing /api/users-prod, /hang, /hang-body
-//	3) add the routes from REQUIRED_ROUTES_YAML to the proxy config
+//	3) add the routes from REQUIRED_ROUTES_YAML to the routes.yaml config
 //
 // If a piece of the environment is missing, the test SKIPS rather than fails.
 // Addresses/paths are overridable via env: PROXY_ADDR, BACKEND_ADDR, API_PATH,
 // DEAD_PATH, HANG_PATH, HANG_BODY_PATH.
 
-/* REQUIRED_ROUTES_YAML - add to the proxy config for the hang/dead tests:
+/* REQUIRED_ROUTES_YAML - add to routes.yaml for the hang/dead tests:
 
 upstreams:
   - name: users-prod
