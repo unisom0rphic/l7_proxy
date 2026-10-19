@@ -19,8 +19,14 @@ tasks:
       - INFRA_CONFIG_PATH={{.INFRA_CONFIG_LOCAL}} ROUTES_CONFIG_PATH={{.ROUTES_CONFIG_LOCAL}} go run ./cmd/proxy
 
   test:
-    desc: Run tests
-    cmd: go test ./cmd/... ./internal/... -count=1
+    desc: Run the end-to-end smoke test, then the unit tests
+    cmds:
+      - task: test:smoke
+      - go test ./cmd/... ./internal/... -count=1
+
+  test:smoke:
+    desc: End-to-end smoke test over the real wiring (needs no running stack)
+    cmd: go test ./internal/proxy/ -run TestSmoke -count=1 -v
 
   test:deep:
     desc: Run exhaustive testing suite
