@@ -94,9 +94,9 @@ type MirroringConfig struct {
 type InfrastructureConfig struct {
 	NetworkTimeoutsSec struct {
 		Transport TransportTimeouts `yaml:"transport"`
-		Server    ServerTimeouts   `yaml:"server"`
+		Server    ServerTimeouts    `yaml:"server"`
 	} `yaml:"net-timeouts-s"`
-	ConnectionPool ConnectionPool `yaml:"connection-pool"`
+	ConnectionPool ConnectionPool  `yaml:"connection-pool"`
 	Mirroring      MirroringConfig `yaml:"mirroring"`
 	Port           string          `yaml:"port"`
 }

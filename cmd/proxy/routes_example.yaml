@@ -11,7 +11,8 @@ upstreams:
 
 routes:
   - rules:
-      path: /api/users
+      path: /api/users_prod
+      rewrite: /api/users_prod
     upstream: users-prod
     mirrors:
       - upstream: users-test
@@ -22,12 +23,3 @@ routes:
       rewrite: /api/orders
       method: GET
     upstream: orders
-
-  - rules:
-      path-prefix: /admin
-      headers:
-        - name: X-Admin-Token
-          op: present
-      client-cidrs:
-        - 172.16.0.0/12  # docker default address pool range
-    upstream: users-prod

@@ -33,6 +33,7 @@ func (r *Router) Wait() { r.wg.Wait() }
 
 type Decision struct {
 	Upstream string
+	Timeout  time.Duration
 	Target   *url.URL
 	Mirrors  []mirroring.Target
 }
@@ -246,6 +247,7 @@ func finalize(cfg *config.Config, c candidate, r *http.Request) (Decision, error
 
 	rewrite := effectiveRewrite(c.route.Rule)
 	target := buildTarget(host, rewrite, c.pathSuffix, r.URL.RawQuery)
+	timeout := discoverTimeout(cfg, c.route.Upstream)
 
 	mirrors, err := resolveMirrors(cfg, c.route.Mirrors)
 	if err != nil {
@@ -253,7 +255,17 @@ func finalize(cfg *config.Config, c candidate, r *http.Request) (Decision, error
 	}
 
 	slog.Debug("decideRoute: route found", "host", host, "mirrors", len(mirrors))
-	return Decision{Upstream: c.route.Upstream, Target: target, Mirrors: mirrors}, nil
+	return Decision{Upstream: c.route.Upstream, Timeout: timeout, Target: target, Mirrors: mirrors}, nil
+}
+
+// Searches timeout for current upstream (linearly)
+func discoverTimeout(cfg *config.Config, up string) time.Duration {
+	for _, u := range cfg.Upstreams {
+		if u.Name == up {
+			return time.Duration(u.Timeout)
+		}
+	}
+	return 0
 }
 
 func resolveHost(cfg *config.Config, name string) (*url.URL, error) {
