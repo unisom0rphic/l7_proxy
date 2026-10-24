@@ -1,0 +1,44 @@
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - noctx
+    - unconvert
+    - wastedassign
+  settings:
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (io.ReadCloser).Close
+        - (*os.File).Close
+        - (*github.com/fsnotify/fsnotify.Watcher).Close
+
+  exclusions:
+    presets: 
+      - common-false-positives
+    rules:
+      - path: '(.+)_test\.go'
+        linters:
+          - errcheck
+          - gosec
+          - noctx
+          - bodyclose
+      - path: ^cmd/backend/
+        linters:
+          - errcheck
+          - gosec
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

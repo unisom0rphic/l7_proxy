@@ -18,6 +18,14 @@ tasks:
       - docker compose up -d users-prod users-test orders
       - INFRA_CONFIG_PATH={{.INFRA_CONFIG_LOCAL}} ROUTES_CONFIG_PATH={{.ROUTES_CONFIG_LOCAL}} go run ./cmd/proxy
 
+  lint:
+    desc: Runs golangci-lint
+    cmd: golangci-lint run ./...
+
+  fmt:
+    desc: Runs go fmt
+    cmd: go fmt ./...
+
   test:
     desc: Run the end-to-end smoke test, then the unit tests
     cmds:
