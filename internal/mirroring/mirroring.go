@@ -120,6 +120,7 @@ func (p *Pool) worker() {
 	defer p.wg.Done()
 	for j := range p.queue {
 		for _, t := range j.targets {
+			//nolint:gosec // Sampling doesn't require strong generator
 			if !sample(t.Ratio, rand.Float64()) {
 				continue
 			}
@@ -138,6 +139,7 @@ func (p *Pool) send(j Job, t Target) error {
 	u.Path = j.path
 	u.RawQuery = j.rawQuery
 
+	//nolint:noctx // Timeout handled by client.Do() on :150
 	req, err := http.NewRequest(j.method, u.String(), bytes.NewReader(j.body))
 	if err != nil {
 		return err
@@ -152,7 +154,7 @@ func (p *Pool) send(j Job, t Target) error {
 	defer resp.Body.Close()
 
 	// The body has to be drained for the connection to be reused.
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	return nil
 }

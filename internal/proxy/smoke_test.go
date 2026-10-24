@@ -2,6 +2,7 @@ package proxy_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -329,7 +330,8 @@ func registerMetrics(t *testing.T) {
 	}
 	for _, c := range collectors {
 		if err := prometheus.Register(c); err != nil {
-			if _, already := err.(prometheus.AlreadyRegisteredError); !already {
+			var alreadyErr prometheus.AlreadyRegisteredError
+			if errors.As(err, &alreadyErr) {
 				t.Fatalf("register %T: %v", c, err)
 			}
 		}

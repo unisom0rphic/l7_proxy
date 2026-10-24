@@ -8,8 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-
-	_ "net/http/pprof"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/unisom0rphic/l7proxy/internal/config"
@@ -39,8 +38,14 @@ func main() {
 	}
 
 	// pprof
+	pprofServer := &http.Server{
+		Addr:              "127.0.0.1:6060",
+		Handler:           nil,
+		ReadHeaderTimeout: 3 * time.Second,
+	}
+
 	go func() {
-		slog.Info("Start pprof", "listen_and_serve", http.ListenAndServe("localhost:6060", nil))
+		slog.Info("Start pprof", "listen_and_serve", pprofServer.ListenAndServe())
 	}()
 
 	slogOpts := &slog.HandlerOptions{
@@ -96,5 +101,7 @@ func main() {
 		infraConfig.Port = port
 	}
 	p := proxy.New(proxyRouter, infraConfig, metrics.Default, proxyMirror)
-	p.Run(ctx)
+	if err = p.Run(ctx); err != nil {
+		slog.Error("Proxy error", "error", err)
+	}
 }

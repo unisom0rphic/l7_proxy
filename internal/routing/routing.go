@@ -357,28 +357,28 @@ func NewRouter(cfg *config.Config) (*Router, error) {
 // Starts monitoring config file for updates, automatically swaps if notices changes.
 // A removed config is reported and ignored: the router keeps serving the last
 // valid config until the file reappears.
-func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
+func (r *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("failed to create a new watcher: %w", err)
 	}
 
-	absTarget, err := filepath.Abs(router.configPath)
+	absTarget, err := filepath.Abs(r.configPath)
 	if err != nil {
-		watcher.Close()
+		_ = watcher.Close()
 		return fmt.Errorf("failed to obtain absolute path: %w", err)
 	}
 
 	parentDir := filepath.Dir(absTarget)
 
 	if err := watcher.Add(parentDir); err != nil {
-		watcher.Close()
+		_ = watcher.Close()
 		return fmt.Errorf("adding directory (%s) to watch list failed: %w", parentDir, err)
 	}
-	slog.Info("monitoring changes", "config", router.configPath)
+	slog.Info("monitoring changes", "config", r.configPath)
 
 	// Listener loop
-	router.wg.Go(func() {
+	r.wg.Go(func() {
 		defer watcher.Close()
 
 		configCooldown := time.NewTimer(0)
@@ -396,7 +396,7 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 				pendingReload = source
 				return
 			}
-			router.reloadConfig(source)
+			r.reloadConfig(source)
 			onCoolDown = true
 			configCooldown.Reset(reloadCooldown)
 		}
@@ -434,7 +434,7 @@ func (router *Router) startMonitoringConfigUpdates(ctx context.Context) error {
 				switch {
 				case event.Has(fsnotify.Remove), event.Has(fsnotify.Rename):
 					if _, err := os.Stat(absTarget); err != nil {
-						slog.Error("Config deleted", "path", router.configPath, "event", event.Name)
+						slog.Error("Config deleted", "path", r.configPath, "event", event.Name)
 						metrics.ConfigReloadErrorsTotal.WithLabelValues("remove").Inc()
 						continue
 					}
