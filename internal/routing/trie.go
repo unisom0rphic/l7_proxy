@@ -10,12 +10,12 @@ func newNode() *trieNode {
 	return &trieNode{}
 }
 
-type trie struct {
-	root       *trieNode
-	countWords int
+type Trie struct {
+	root *trieNode
+	size int
 }
 
-func (tr *trie) Insert(word string) {
+func (tr *Trie) Insert(word string) {
 	cur := tr.root
 	for c := 0; c < len(word); c++ {
 		if cur.children[word[c]] == nil {
@@ -26,11 +26,11 @@ func (tr *trie) Insert(word string) {
 	}
 	if !cur.end {
 		cur.end = true
-		tr.countWords++
+		tr.size++
 	}
 }
 
-func (tr *trie) Search(word string) bool {
+func (tr *Trie) Search(word string) bool {
 	if word == "" {
 		return true
 	}
@@ -44,7 +44,7 @@ func (tr *trie) Search(word string) bool {
 	return cur.end
 }
 
-func (tr *trie) StartsWith(prefix string) bool {
+func (tr *Trie) StartsWith(prefix string) bool {
 	cur := tr.root
 	for c := 0; c < len(prefix); c++ {
 		if cur.children[prefix[c]] == nil {
@@ -61,7 +61,7 @@ type Triplet struct {
 	child *trieNode
 }
 
-func (tr *trie) Delete(word string) bool {
+func (tr *Trie) Delete(word string) bool {
 	if word == "" {
 		if tr.root.end {
 			tr.root.end = false
@@ -99,12 +99,12 @@ func (tr *trie) Delete(word string) bool {
 	return true
 }
 
-func (tr *trie) CountWords() int {
-	return tr.countWords
+func (tr *Trie) Size() int {
+	return tr.size
 }
 
-func newTrie() trie {
-	return trie{
+func NewTrie() Trie {
+	return Trie{
 		root: newNode(),
 	}
 }

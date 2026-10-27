@@ -117,7 +117,7 @@ func BenchmarkSearch(b *testing.B) {
 		qs := queries(words, 1000)
 
 		b.Run(fmt.Sprintf("Trie/N=%d", n), func(b *testing.B) {
-			tr := newTrie()
+			tr := NewTrie()
 			for _, w := range words {
 				tr.Insert(w)
 			}
@@ -153,7 +153,7 @@ func BenchmarkSearch(b *testing.B) {
 func BenchmarkStartsWith(b *testing.B) {
 	for _, n := range []int{1_000, 10_000, 100_000} {
 		words := dataset(n)
-		tr := newTrie()
+		tr := NewTrie()
 		for _, w := range words {
 			tr.Insert(w)
 		}
@@ -202,11 +202,11 @@ func BenchmarkInsert(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				tr := newTrie()
+				tr := NewTrie()
 				for _, w := range words {
 					tr.Insert(w)
 				}
-				sinkInt = tr.CountWords()
+				sinkInt = tr.Size()
 			}
 		})
 
