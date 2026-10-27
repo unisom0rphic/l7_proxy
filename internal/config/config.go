@@ -99,6 +99,7 @@ type InfrastructureConfig struct {
 	ConnectionPool ConnectionPool  `yaml:"connection-pool"`
 	Mirroring      MirroringConfig `yaml:"mirroring"`
 	Port           string          `yaml:"port"`
+	MaxBodySize    int64           `yaml:"max_body_size"`
 }
 
 type Config struct {

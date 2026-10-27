@@ -60,12 +60,23 @@ const upstreamUnmatched = "unmatched"
 func (p *L7Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
+	if maxSize := p.infraConfig.MaxBodySize; maxSize > 0 && r.ContentLength > maxSize {
+		http.Error(w, http.StatusText(http.StatusRequestEntityTooLarge), http.StatusRequestEntityTooLarge)
+		p.observe(r.Method, upstreamUnmatched, http.StatusRequestEntityTooLarge, start)
+		return
+	}
+
 	decision, err := p.router.DecideRoute(r)
 	if err != nil {
 		slog.Debug("no route for request", "method", r.Method, "path", r.URL.Path, "error", err)
 		http.NotFound(w, r)
 		p.observe(r.Method, upstreamUnmatched, http.StatusNotFound, start)
 		return
+	}
+
+	// Multipart/streaming -> Content-Length might be -1, thus use MaxBytesReader
+	if maxSize := p.infraConfig.MaxBodySize; maxSize > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxSize)
 	}
 
 	wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
@@ -126,8 +137,13 @@ func (p *L7Proxy) rewrite(pr *httputil.ProxyRequest) {
 func (p *L7Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	slog.Info("Proxy HTTP error", "method", r.Method, "path", r.URL.Path, "error", err)
 
-	if errors.Is(err, context.DeadlineExceeded) {
+	var maxBytes *http.MaxBytesError
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
 		http.Error(w, "Request timed out on the server", http.StatusGatewayTimeout)
+		return
+	case errors.As(err, &maxBytes):
+		http.Error(w, "Request body too big", http.StatusRequestEntityTooLarge)
 		return
 	}
 	http.Error(w, "Bad Gateway: unexpected error", http.StatusBadGateway)
