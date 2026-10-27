@@ -4,6 +4,7 @@
 *.yaml
 !routes_example.yaml
 !infrastructure_example.yaml
-bench-*/
+bench*
+!bench.sh
 cmd/proxy/proxy
 coverage.out
