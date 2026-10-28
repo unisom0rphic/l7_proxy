@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 
@@ -519,6 +520,23 @@ func startRouterFromTmpConfig(t *testing.T, yamlText string) (configPath string,
 	return configPath, r
 }
 
+// newRouterFromYAML builds a router via ParseConfig so CompiledRegex is
+// populated. Unlike startRouterFromTmpConfig it attaches no watcher -
+// nothing to clean up. Use this for any test that needs a regex route;
+// testConfig (hand-built Config) intentionally leaves CompiledRegex nil.
+func newRouterFromYAML(t *testing.T, yaml string) *Router {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "routing.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.ParseConfig(path)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	return newTestRouter(t, cfg)
+}
+
 func rewriteConfigFile(t *testing.T, path, yamlText string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(yamlText), 0o644); err != nil {
@@ -641,5 +659,180 @@ func TestReload_InvalidConfigKeepsOld(t *testing.T) {
 				t.Error("v2 route missing after reload")
 			}
 		})
+	}
+}
+
+func TestDecideRoute_ExactBeatsRegex(t *testing.T) {
+	r := newRouterFromYAML(t, `
+upstreams:
+  - {name: exact,  host: http://exact:1111,  timeout-ms: 100}
+  - {name: prefix, host: http://prefix:2222, timeout-ms: 100}
+  - {name: rx,     host: http://rx:3333,     timeout-ms: 100}
+routes:
+  - {rules: {regex: ^/api/v\d+$, rewrite: /rx}, upstream: rx}
+  - {rules: {path-prefix: /api}, upstream: prefix}
+  - {rules: {path: /api/v1}, upstream: exact}
+`)
+	if got := mustDecide(t, r, request(t, "GET", "/api/v1", nil)); got != "http://exact:1111/api/v1" {
+		t.Errorf("want exact, got %q", got)
+	}
+}
+
+func TestDecideRoute_PrefixBeatsRegex(t *testing.T) {
+	r := newRouterFromYAML(t, `
+upstreams:
+  - {name: prefix, host: http://prefix:2222, timeout-ms: 100}
+  - {name: rx,     host: http://rx:3333,     timeout-ms: 100}
+routes:
+  - {rules: {regex: ^/api/.*$, rewrite: /rx}, upstream: rx}
+  - {rules: {path-prefix: /api}, upstream: prefix}
+`)
+	if got := mustDecide(t, r, request(t, "GET", "/api/v1", nil)); got != "http://prefix:2222/api/v1" {
+		t.Errorf("want prefix, got %q", got)
+	}
+}
+
+func TestDecideRoute_RegexWhenNoPathOrPrefixMatch(t *testing.T) {
+	r := newRouterFromYAML(t, `
+upstreams:
+  - {name: a, host: http://a:1111, timeout-ms: 100}
+routes:
+  - {rules: {regex: ^/api/v\d+$, rewrite: /v2}, upstream: a}
+`)
+	if got := mustDecide(t, r, request(t, "GET", "/api/v123", nil)); got != "http://a:1111/v2" {
+		t.Errorf("want /v2, got %q", got)
+	}
+	noDecide(t, r, request(t, "GET", "/api/x", nil))
+}
+
+func TestDecideRoute_RegexOrderRespected(t *testing.T) {
+	// Two distinct regexes both matching /api/v1: first declared wins.
+	r := newRouterFromYAML(t, `
+upstreams:
+  - {name: first,  host: http://first:1111,  timeout-ms: 100}
+  - {name: second, host: http://second:2222, timeout-ms: 100}
+routes:
+  - {rules: {regex: ^/api/v1$, rewrite: /first},  upstream: first}
+  - {rules: {regex: ^/api/.*$, rewrite: /second}, upstream: second}
+`)
+	if got := mustDecide(t, r, request(t, "GET", "/api/v1", nil)); got != "http://first:1111/first" {
+		t.Errorf("want first (declared earlier), got %q", got)
+	}
+	// A path only the second regex matches still routes to second.
+	if got := mustDecide(t, r, request(t, "GET", "/api/other", nil)); got != "http://second:2222/second" {
+		t.Errorf("want second, got %q", got)
+	}
+}
+
+func TestDecideRoute_RegexWithMethodFilter(t *testing.T) {
+	r := newRouterFromYAML(t, `
+upstreams:
+  - {name: a, host: http://a:1111, timeout-ms: 100}
+routes:
+  - {rules: {regex: ^/api/v\d+$, rewrite: /v2, method: POST}, upstream: a}
+`)
+	mustDecide(t, r, request(t, "POST", "/api/v1", nil))
+	noDecide(t, r, request(t, "GET", "/api/v1", nil))
+}
+
+func TestDecideRoute_RegexWithHeaderFilter(t *testing.T) {
+	r := newRouterFromYAML(t, `
+upstreams:
+  - {name: a, host: http://a:1111, timeout-ms: 100}
+routes:
+  - rules:
+      regex: ^/api/v\d+$
+      rewrite: /v2
+      headers:
+        - {name: X-Debug, op: present}
+    upstream: a
+`)
+	h := http.Header{}
+	h.Set("X-Debug", "1")
+	mustDecide(t, r, request(t, "GET", "/api/v1", h))
+	noDecide(t, r, request(t, "GET", "/api/v1", nil))
+}
+
+func TestDecideRoute_RegexExpandsCapture(t *testing.T) {
+	r := newRouterFromYAML(t, `
+upstreams:
+  - {name: a, host: http://a:1111, timeout-ms: 100}
+routes:
+  - {rules: {regex: "^/api/(.*)$", rewrite: "/v2/$1"}, upstream: a}
+`)
+	if got := mustDecide(t, r, request(t, "GET", "/api/users/42?x=1", nil)); got != "http://a:1111/v2/users/42?x=1" {
+		t.Errorf("want /v2/users/42?x=1, got %q", got)
+	}
+}
+
+func TestDecideRoute_RegexUnmatchedGroupExpandsToEmpty(t *testing.T) {
+	r := newRouterFromYAML(t, `
+upstreams:
+  - {name: a, host: http://a:1111, timeout-ms: 100}
+routes:
+  - {rules: {regex: "^/api(?:/v(\\d+))?$", rewrite: "/v$1"}, upstream: a}
+`)
+	if got := mustDecide(t, r, request(t, "GET", "/api", nil)); got != "http://a:1111/v" {
+		t.Errorf("want /v, got %q", got)
+	}
+	if got := mustDecide(t, r, request(t, "GET", "/api/v7", nil)); got != "http://a:1111/v7" {
+		t.Errorf("want /v7, got %q", got)
+	}
+}
+
+func matchIndex(t *testing.T, pattern, path string) []int {
+	t.Helper()
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		t.Fatalf("bad pattern %q: %v", pattern, err)
+	}
+	m := re.FindStringSubmatchIndex(path)
+	if m == nil {
+		t.Fatalf("pattern %q did not match %q", pattern, path)
+	}
+	return m
+}
+
+func TestExpandRewrite(t *testing.T) {
+	// Pattern yields two capture groups:
+	//   $0 = "/api/v1/users/42"
+	//   $1 = "1"
+	//   $2 = "42"
+	const path = "/api/v1/users/42"
+	m := matchIndex(t, `^/api/v(\d+)(?:/users/(\d+))?$`, path)
+
+	cases := []struct{ tmpl, want string }{
+		{"/v$0", "/v/api/v1/users/42"},
+		{"/v$1", "/v1"},
+		{"/v$2", "/v42"},
+		{"/v$1/users/$2", "/v1/users/42"},
+		{"$1$2", "142"},
+		{"/v$$1", "/v$1"},         // $$ = literal $
+		{"/v$9", "/v"},            // out of range → empty
+		{"/v$1?$x=1", "/v1?$x=1"}, // $x not a digit → literal
+	}
+	for _, tc := range cases {
+		if got := expandRegexRewrite(tc.tmpl, path, m); got != tc.want {
+			t.Errorf("expandRegexRewrite(%q) = %q, want %q", tc.tmpl, got, tc.want)
+		}
+	}
+}
+
+func TestExpandRewrite_NilMatchReturnsTemplate(t *testing.T) {
+	if got := expandRegexRewrite("/v2/$1", "/api", nil); got != "/v2/$1" {
+		t.Fatalf("want passthrough, got %q", got)
+	}
+}
+
+func TestExpandRewrite_SingleDigitGroupsOnly(t *testing.T) {
+	// $10 must be $1 followed by "0", not group 10.
+	const path = "abcdefghij"
+	m := matchIndex(t, `^(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)$`, path)
+
+	if got := expandRegexRewrite("$1$0", path, m); got != "a"+path {
+		t.Errorf("$1$0 = %q, want %q", got, "a"+path)
+	}
+	if got := expandRegexRewrite("$10", path, m); got != "a0" {
+		t.Errorf("$10 = %q, want a0", got)
 	}
 }

@@ -42,9 +42,16 @@ type candidate struct {
 	route       *config.Route
 	pathSuffix  string
 	specificity int
+	regexMatch  []int
 }
 
 // Decides which API route to use for a given http.Request
+//
+// Priority:
+//
+//	exact (path == request path)
+//	prefix (longest match wins)
+//	regex  (first match in cfg.Routes order wins)
 func (router *Router) DecideRoute(r *http.Request) (Decision, error) {
 	if r.URL == nil {
 		return Decision{}, errors.New("empty url")
@@ -61,14 +68,18 @@ func (router *Router) DecideRoute(r *http.Request) (Decision, error) {
 		return finalize(cfg, c, r)
 	}
 
-	cs := matchPrefix(cfg, r, path)
-	c, ok := pickBest(cs)
-	if !ok {
-		slog.Debug("decideRoute: no match", "path", path)
-		return Decision{}, errors.New("route not found")
+	if cs := matchPrefix(cfg, r, path); len(cs) > 0 {
+		if c, ok := pickBest(cs); ok {
+			return finalize(cfg, c, r)
+		}
 	}
 
-	return finalize(cfg, c, r)
+	if c, ok := matchRegex(cfg, r, path); ok {
+		return finalize(cfg, c, r)
+	}
+
+	slog.Debug("decideRoute: no match", "path", path)
+	return Decision{}, errors.New("route not found")
 }
 
 // matchExact returns the first route whose Rule.Path equals path and whose
@@ -118,6 +129,40 @@ func matchPrefix(cfg *config.Config, r *http.Request, path string) []candidate {
 		})
 	}
 	return cs
+}
+
+// matchRegex returns the *first* regex route (in cfg.Routes order) whose
+// compiled regex matches path and whose method/headers/hosts/CIDRs all
+// match.
+func matchRegex(cfg *config.Config, r *http.Request, path string) (candidate, bool) {
+	for i := range cfg.Routes {
+		route := &cfg.Routes[i]
+		if route.Rule.Regex == "" {
+			continue
+		}
+		if !matchConditions(route.Rule, r) {
+			continue
+		}
+		re := route.Rule.CompiledRegex()
+		if re == nil {
+			// ParseConfig guarantee this never happens for a
+			// regex rule. A nil here means the config was assembled
+			// without either; skip rather than compile per request.
+			slog.Error("decideRoute: regex rule has no compiled regex",
+				"regex", route.Rule.Regex)
+			continue
+		}
+		m := re.FindStringSubmatchIndex(path)
+		if m == nil {
+			continue
+		}
+		slog.Debug("found regex", "regex", route.Rule.Regex, "path", path)
+		return candidate{
+			route:      route,
+			regexMatch: m,
+		}, true
+	}
+	return candidate{}, false
 }
 
 // matchConditions checks everything about the request except the path shape:
@@ -245,8 +290,15 @@ func finalize(cfg *config.Config, c candidate, r *http.Request) (Decision, error
 		return Decision{}, err
 	}
 
-	rewrite := effectiveRewrite(c.route.Rule)
-	target := buildTarget(host, rewrite, c.pathSuffix, r.URL.RawQuery)
+	var target *url.URL
+	if c.regexMatch != nil {
+		expanded := expandRegexRewrite(c.route.Rule.Rewrite, r.URL.Path, c.regexMatch)
+		target = buildTarget(host, expanded, "", r.URL.RawQuery)
+	} else {
+		rewrite := effectiveRewrite(c.route.Rule)
+		target = buildTarget(host, rewrite, c.pathSuffix, r.URL.RawQuery)
+	}
+
 	timeout := discoverTimeout(cfg, c.route.Upstream)
 
 	mirrors, err := resolveMirrors(cfg, c.route.Mirrors)
@@ -307,6 +359,47 @@ func effectiveRewrite(rule config.Rule) string {
 		return rule.Path
 	}
 	return rule.PathPrefix
+}
+
+// expandRegexRewrite substitutes capture references in a rewrite template using
+// the submatch indices from FindStringSubmatchIndex:
+//
+//	$0        whole match
+//	$1..$9    capture groups (nginx-style single digit; $10 means $1
+//	          followed by "0", not group 10)
+//	$$        literal '$'
+//
+// Any other '$' is left as-is, so a template like "/v2/$data" round-trips
+// unchanged. An unmatched optional group expands to nothing.
+// No path suffix for regex routes.
+func expandRegexRewrite(template, path string, match []int) string {
+	if match == nil {
+		return template
+	}
+	var b strings.Builder
+	b.Grow(len(template))
+	for i := 0; i < len(template); i++ {
+		if template[i] != '$' || i+1 >= len(template) {
+			b.WriteByte(template[i])
+			continue
+		}
+		switch next := template[i+1]; {
+		case next == '$':
+			b.WriteByte('$')
+			i++
+		case next >= '0' && next <= '9':
+			n := int(next - '0')
+			// match[2*n], match[2*n+1] are start/end of group n; both
+			// are -1 for an unmatched optional group.
+			if 2*n+1 < len(match) && match[2*n] >= 0 {
+				b.WriteString(path[match[2*n]:match[2*n+1]])
+			}
+			i++
+		default:
+			b.WriteByte(template[i])
+		}
+	}
+	return b.String()
 }
 
 // buildTarget constructs the outbound URL for the winning candidate.
