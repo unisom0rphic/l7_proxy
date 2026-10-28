@@ -74,6 +74,7 @@ mirroring:
   queue-size: 10
 
 port: "%d"
+max-body-size: 4096
 `
 
 type backendRequest struct {

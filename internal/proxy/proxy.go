@@ -248,6 +248,7 @@ func (p *L7Proxy) Run(ctx context.Context) error {
 
 		if err := p.server.Shutdown(shutdownCtx); err != nil {
 			slog.Error("Shutdown failed", "error", err)
+			//nolint:errcheck,gosec
 			p.server.Close()
 			return fmt.Errorf("shutdown: %w", err)
 		}

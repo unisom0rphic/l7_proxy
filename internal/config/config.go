@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -61,13 +62,21 @@ func (h HeaderMatch) EffectiveOp() HeaderOp {
 }
 
 type Rule struct {
-	PathPrefix  string        `yaml:"path-prefix"`
-	Path        string        `yaml:"path"`
-	Rewrite     string        `yaml:"rewrite"`
-	Method      string        `yaml:"method"`
-	Headers     []HeaderMatch `yaml:"headers,omitempty"`
-	Hosts       []string      `yaml:"hosts,omitempty"`
-	ClientCIDRs []string      `yaml:"client-cidrs,omitempty"`
+	PathPrefix    string        `yaml:"path-prefix"`
+	Path          string        `yaml:"path"`
+	Regex         string        `yaml:"regex"`
+	Rewrite       string        `yaml:"rewrite"`
+	Method        string        `yaml:"method"`
+	Headers       []HeaderMatch `yaml:"headers,omitempty"`
+	Hosts         []string      `yaml:"hosts,omitempty"`
+	ClientCIDRs   []string      `yaml:"client-cidrs,omitempty"`
+	compiledRegex *regexp.Regexp
+}
+
+// CompiledRegex returns the pre-compiled regex for this rule, or nil
+// when Rule.Regex is empty.
+func (r *Rule) CompiledRegex() *regexp.Regexp {
+	return r.compiledRegex
 }
 
 type Mirror struct {
@@ -99,7 +108,7 @@ type InfrastructureConfig struct {
 	ConnectionPool ConnectionPool  `yaml:"connection-pool"`
 	Mirroring      MirroringConfig `yaml:"mirroring"`
 	Port           string          `yaml:"port"`
-	MaxBodySize    int64           `yaml:"max_body_size"`
+	MaxBodySize    int64           `yaml:"max-body-size"`
 }
 
 type Config struct {
@@ -253,12 +262,27 @@ func validateRoutes(routes []Route, upstreams []Upstream) []error {
 func validateRule(i int, r Rule) []error {
 	var errs []error
 
-	if r.Path != "" && r.PathPrefix != "" {
-		errs = append(errs, fmt.Errorf("routes[%d]: both path and path-prefix are set", i))
+	// Combining matchers is ambiguous for effectiveRewrite, thus
+	// exactly one of path / path-prefix / regex can be set.
+	set := 0
+	if r.Path != "" {
+		set++
 	}
-	if r.Path == "" && r.PathPrefix == "" {
-		errs = append(errs, fmt.Errorf("routes[%d]: both path and path-prefix are empty", i))
+	if r.PathPrefix != "" {
+		set++
 	}
+	if r.Regex != "" {
+		set++
+	}
+	switch {
+	case set == 0:
+		errs = append(errs, fmt.Errorf(
+			"routes[%d]: exactly one of path, path-prefix, regex must be set (none set)", i))
+	case set > 1:
+		errs = append(errs, fmt.Errorf(
+			"routes[%d]: exactly one of path, path-prefix, regex must be set (%d set)", i, set))
+	}
+
 	if err := validatePathLike(i, "path", r.Path); err != nil {
 		errs = append(errs, err)
 	}
@@ -266,13 +290,27 @@ func validateRule(i int, r Rule) []error {
 		errs = append(errs, err)
 	}
 
-	if r.Rewrite != "" {
-		if r.Path == "" && r.PathPrefix == "" {
-			errs = append(errs, fmt.Errorf("routes[%d]: rewrite requires path or path-prefix", i))
+	// Regex is free-form; anchoring is the operator's responsibility.
+	// Compilability is re-checked here so that directly-constructed
+	// configs (tests, ad-hoc callers) are caught too; on the
+	// ParseConfig path compileRegexes has already run.
+	if r.Regex != "" {
+		if _, err := regexp.Compile(r.Regex); err != nil {
+			errs = append(errs, fmt.Errorf(
+				"routes[%d]: regex %q does not compile: %w", i, r.Regex, err))
 		}
-		if err := validateRewrite(i, r.Rewrite); err != nil {
-			errs = append(errs, err)
+	}
+
+	// Rewrite is optional for path / path-prefix (effectiveRewrite
+	// falls back to the matched value) but mandatory for regex:
+	// there is no natural base path to fall back to.
+	if r.Rewrite == "" {
+		if r.Regex != "" {
+			errs = append(errs, fmt.Errorf(
+				"routes[%d]: rewrite is required when regex is set", i))
 		}
+	} else if err := validateRewrite(i, r.Rewrite); err != nil {
+		errs = append(errs, err)
 	}
 
 	if r.Method != "" {
@@ -429,6 +467,24 @@ func validateMirror(i int, r Route, names map[string]struct{}) []error {
 	return errs
 }
 
+// compileRegexes pre-compiles Rule.Regex for every route so the router
+// never calls regexp.Compile per request. Mirrors mapNamesToHosts:
+// preparation belongs to ParseConfig, not to Validate.
+func (cfg *Config) compileRegexes() error {
+	for i := range cfg.Routes {
+		rule := &cfg.Routes[i].Rule
+		if rule.Regex == "" {
+			continue
+		}
+		re, err := regexp.Compile(rule.Regex)
+		if err != nil {
+			return fmt.Errorf("routes[%d]: regex %q does not compile: %w", i, rule.Regex, err)
+		}
+		rule.compiledRegex = re
+	}
+	return nil
+}
+
 func dedupKey(r Rule) string {
 	var b strings.Builder
 	b.WriteString(strings.ToUpper(r.Method))
@@ -436,6 +492,8 @@ func dedupKey(r Rule) string {
 	b.WriteString(r.Path)
 	b.WriteByte('|')
 	b.WriteString(r.PathPrefix)
+	b.WriteByte('|')
+	b.WriteString(r.Regex)
 
 	for _, h := range r.Headers {
 		b.WriteByte('|')
@@ -541,11 +599,20 @@ func validateMirroringConfig(cfg *InfrastructureConfig) []error {
 	return errs
 }
 
+func validateMaxBodySize(cfg *InfrastructureConfig) []error {
+	if cfg.MaxBodySize <= 0 {
+		return []error{fmt.Errorf(
+			"max_body_size must be > 0, got %d", cfg.MaxBodySize)}
+	}
+	return nil
+}
+
 func (cfg *InfrastructureConfig) Validate() []error {
 	var errs []error
 	errs = append(errs, validateTimeouts(cfg)...)
 	errs = append(errs, validateConnectionPool(cfg)...)
 	errs = append(errs, validateMirroringConfig(cfg)...)
+	errs = append(errs, validateMaxBodySize(cfg)...)
 	return errs
 }
 
@@ -656,6 +723,9 @@ func ParseConfig(configPath string) (*Config, error) {
 	}
 	if err := config.mapNamesToHosts(); err != nil {
 		return nil, fmt.Errorf("building name->host map failed (%s): %w", configPath, err)
+	}
+	if err := config.compileRegexes(); err != nil {
+		return nil, fmt.Errorf("building regex map failed (%s): %w", configPath, err)
 	}
 
 	return &config, nil

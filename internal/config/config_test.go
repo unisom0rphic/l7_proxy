@@ -467,3 +467,123 @@ func TestParseInfrastructureConfig_RejectsUnknownFields(t *testing.T) {
 		t.Fatal("expected an unknown-field error for queue_size")
 	}
 }
+
+func TestValidate_AcceptsRegex(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Rule = Rule{Regex: `^/api/v\d+`, Rewrite: "/v2"}
+	wantOK(t, cfg)
+}
+
+func TestValidate_AcceptsRegexWithRewriteUsingCapture(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Rule = Rule{Regex: `^/api/(.*)$`, Rewrite: "/v2/$1"}
+	wantOK(t, cfg)
+}
+
+func TestValidate_RejectsRegexWithoutRewrite(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Rule = Rule{Regex: `^/api`}
+	wantErrContains(t, cfg, "rewrite is required when regex is set")
+}
+
+func TestValidate_RejectsRegexWithBadRewrite(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Rule = Rule{Regex: `^/api`, Rewrite: "v2"} // no leading /
+	wantErr(t, cfg)
+}
+
+func TestValidate_RejectsUncompilableRegex(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Rule = Rule{Regex: `(/api`, Rewrite: "/v2"}
+	wantErrContains(t, cfg, "does not compile")
+}
+
+func TestValidate_RejectsRegexMixedWithPath(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Rule = Rule{Regex: `^/api`, Path: "/api", Rewrite: "/v2"}
+	wantErrContains(t, cfg, "exactly one of path, path-prefix, regex")
+}
+
+func TestValidate_RejectsRegexMixedWithPathPrefix(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Rule = Rule{Regex: `^/api`, PathPrefix: "/api", Rewrite: "/v2"}
+	wantErrContains(t, cfg, "exactly one of path, path-prefix, regex")
+}
+
+func TestValidate_RejectsRegexMixedWithBoth(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Rule = Rule{Regex: `^/api`, Path: "/api", PathPrefix: "/api", Rewrite: "/v2"}
+	wantErrContains(t, cfg, "exactly one of path, path-prefix, regex")
+}
+
+func TestValidate_RejectsDuplicateRegexRoutes(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Rule = Rule{Regex: `^/api`, Rewrite: "/v2"}
+	cfg.Routes[1].Rule = Rule{Regex: `^/api`, Rewrite: "/v2"}
+	wantErrContains(t, cfg, "duplicate of routes[")
+}
+
+func TestValidate_AcceptsDifferentRegexRoutes(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Rule = Rule{Regex: `^/api`, Rewrite: "/v2"}
+	cfg.Routes[1].Rule = Rule{Regex: `^/other`, Rewrite: "/v3"}
+	wantOK(t, cfg)
+}
+
+func TestParseConfig_RegexField(t *testing.T) {
+	text := `upstreams:
+  - name: a
+    host: http://srv-a:1111
+    timeout-ms: 300
+routes:
+  - rules:
+      regex: ^/api/v\d+
+      rewrite: /v2
+    upstream: a
+`
+	cfg, err := ParseConfig(writeTmpConfig(t, text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Routes[0].Rule.Regex; got != `^/api/v\d+` {
+		t.Fatalf("regex: want %q, got %q", `^/api/v\d+`, got)
+	}
+	if got := cfg.Routes[0].Rule.Rewrite; got != "/v2" {
+		t.Fatalf("rewrite: want /v2, got %q", got)
+	}
+}
+
+func TestInfrastructureValidate_MaxBodySize(t *testing.T) {
+	t.Run("zero rejected", func(t *testing.T) {
+		cfg := &InfrastructureConfig{MaxBodySize: 0}
+		found := false
+		for _, e := range cfg.Validate() {
+			if strings.Contains(e.Error(), "max_body_size") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected max_body_size error, got: %v", cfg.Validate())
+		}
+	})
+	t.Run("negative rejected", func(t *testing.T) {
+		cfg := &InfrastructureConfig{MaxBodySize: -1}
+		found := false
+		for _, e := range cfg.Validate() {
+			if strings.Contains(e.Error(), "max_body_size") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected max_body_size error, got: %v", cfg.Validate())
+		}
+	})
+	t.Run("positive accepted", func(t *testing.T) {
+		cfg := &InfrastructureConfig{MaxBodySize: 1}
+		for _, e := range cfg.Validate() {
+			if strings.Contains(e.Error(), "max_body_size") {
+				t.Fatalf("unexpected max_body_size error: %v", e)
+			}
+		}
+	})
+}

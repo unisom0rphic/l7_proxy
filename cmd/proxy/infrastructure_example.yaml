@@ -19,4 +19,4 @@ mirroring:
   queue-size: 100
 
 port: "8080"
-max_body_size: 4096  # bytes
+max-body-size: 4096  # bytes
