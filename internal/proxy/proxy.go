@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -34,8 +35,23 @@ type responseWriter struct {
 	statusCode int
 }
 
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := rw.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, errors.New("hijacking not supported")
+}
+
 func (rw *responseWriter) WriteHeader(code int) {
-	rw.statusCode = code
+	if rw.statusCode == 0 {
+		rw.statusCode = code
+	}
 	rw.ResponseWriter.WriteHeader(code)
 }
 
@@ -111,6 +127,8 @@ func (p *L7Proxy) rewrite(pr *httputil.ProxyRequest) {
 	}
 
 	// Currently works according to ADR-0003
+	// TODO: reimplement because pr.Out.Body is incomplete
+	// if ReadAll failed
 	body, err := io.ReadAll(pr.In.Body)
 	pr.Out.Body = io.NopCloser(bytes.NewReader(body))
 	if err != nil {
@@ -126,7 +144,7 @@ func (p *L7Proxy) rewrite(pr *httputil.ProxyRequest) {
 		p.mirroringPool.TrySubmit(mirroring.NewJob(
 			pr.In.Method,
 			body,
-			pr.Out.Header,
+			pr.Out.Header.Clone(),
 			decision.Target.Path,
 			decision.Target.RawQuery,
 			decision.Mirrors,
@@ -141,6 +159,8 @@ func (p *L7Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		http.Error(w, "Request timed out on the server", http.StatusGatewayTimeout)
+		return
+	case errors.Is(err, context.Canceled):
 		return
 	case errors.As(err, &maxBytes):
 		http.Error(w, "Request body too big", http.StatusRequestEntityTooLarge)
@@ -228,6 +248,7 @@ func (p *L7Proxy) Run(ctx context.Context) error {
 
 		if err := p.server.Shutdown(shutdownCtx); err != nil {
 			slog.Error("Shutdown failed", "error", err)
+			p.server.Close()
 			return fmt.Errorf("shutdown: %w", err)
 		}
 
