@@ -90,9 +90,10 @@ All fields are AND'ed. Multiple values within one field are OR'ed.
 
 | Key | Type | Required | Description |
 |---|---|---|---|
-| `path` | string | one of | Exact path match. Mutually exclusive with `path-prefix`. Must start with `/`. |
-| `path-prefix` | string | one of | Prefix match. Mutually exclusive with `path`. Must start with `/`. |
-| `rewrite` | string | no | Outbound path base. Defaults to the matched `path`/`path-prefix`. Must start with `/`, no scheme or host. The unmatched remainder of a prefix match is appended. |
+| `path` | string | one of | Exact path match. Mutually exclusive with `path-prefix` and `regex`. Must start with `/`. |
+| `path-prefix` | string | one of | Prefix match. Mutually exclusive with `path` and `regex`. Must start with `/`. |
+| `regex` | string | one of | Regular-expression match against the request path. Mutually exclusive with `path` and `path-prefix`. Requires `rewrite`. See below. |
+| `rewrite` | string | no | Outbound path base. Defaults to the matched `path`/`path-prefix`; required for `regex`. Must start with `/`, no scheme or host. The unmatched remainder of a prefix match is appended; regex rules append nothing. |
 | `method` | string | no | HTTP method, uppercase (GET, POST, …). |
 | `headers` | list | no | Header matchers, see below. |
 | `hosts` | list | no | Request `Host` values to match. A leading `*.` wildcard (`*.example.com`) matches exactly one or more leading labels. Ports are not allowed. |
@@ -109,6 +110,23 @@ All fields are AND'ed. Multiple values within one field are OR'ed.
 A rule matches if **any** value of the header satisfies the op. Two matchers for
 the same header name on one route are rejected: headers are AND'ed, so the
 author almost certainly meant OR, which needs separate routes.
+
+##### `routes[].rules.regex`
+
+Matched against the request path using Go's `regexp` (RE2). The pattern is not
+anchored - add `^` and `$` yourself, or it will match anywhere in the path.
+
+Unlike `path`/`path-prefix`, a regex rule has no natural rewrite base, so
+`rewrite` is required. The whole matched path is replaced by `rewrite`; no
+unmatched remainder is appended. The template substitutes capture references:
+
+| Token | Meaning |
+|---|---|
+| `$0` | the whole match |
+| `$1`-`$9` | capture group (single digit: `$10` means `$1` followed by `0`) |
+| `$$` | a literal `$` |
+
+Any other `$` is left as-is, and an unmatched optional group expands to nothing.
 
 #### `routes[].mirrors[]`
 
