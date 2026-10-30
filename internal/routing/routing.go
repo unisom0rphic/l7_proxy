@@ -24,12 +24,14 @@ import (
 )
 
 type Router struct {
-	configPath   string
-	atomicConfig atomic.Pointer[config.Config]
-	wg           sync.WaitGroup
+	configPath  string
+	atomicIndex atomic.Pointer[routeIndex]
+	wg          sync.WaitGroup
 }
 
 func (r *Router) Wait() { r.wg.Wait() }
+
+func (router *Router) index() *routeIndex { return router.atomicIndex.Load() }
 
 type Decision struct {
 	Upstream string
@@ -39,10 +41,69 @@ type Decision struct {
 }
 
 type candidate struct {
-	route       *config.Route
-	pathSuffix  string
-	specificity int
-	regexMatch  []int
+	route      *config.Route
+	pathSuffix string
+	regexMatch []int
+}
+
+// routeIndex is the compiled form of config.Config: routes grouped by the way
+// they match. It is immutable once built, so a reload publishes a new one with a
+// single atomic store.
+type routeIndex struct {
+	cfg    *config.Config
+	exact  map[string][]*config.Route
+	prefix *trie
+	regex  []*config.Route
+}
+
+func newRouteIndex(cfg *config.Config) *routeIndex {
+	idx := &routeIndex{
+		cfg:    cfg,
+		exact:  make(map[string][]*config.Route),
+		prefix: newTrie(),
+	}
+	for i := range cfg.Routes {
+		route := &cfg.Routes[i]
+		switch {
+		case route.Rule.Path != "":
+			idx.exact[route.Rule.Path] = append(idx.exact[route.Rule.Path], route)
+		case route.Rule.PathPrefix != "":
+			idx.prefix.insert(route.Rule.PathPrefix, route)
+		case route.Rule.Regex != "":
+			idx.regex = append(idx.regex, route)
+		}
+	}
+	return idx
+}
+
+// MatchExact returns the first route registered for exactly path whose
+// conditions match r.
+func (idx *routeIndex) MatchExact(r *http.Request, path string) (candidate, bool) {
+	for _, route := range idx.exact[path] {
+		if matchConditions(route.Rule, r) {
+			return candidate{route: route}, true
+		}
+	}
+	return candidate{}, false
+}
+
+// MatchPrefix returns the route with the longest registered prefix of path whose
+// conditions match r. Routes sharing a prefix are tried in config order.
+func (idx *routeIndex) MatchPrefix(r *http.Request, path string) (candidate, bool) {
+	var (
+		best candidate
+		ok   bool
+	)
+	idx.prefix.match(path, func(routes []*config.Route, depth int) bool {
+		for _, route := range routes {
+			if matchConditions(route.Rule, r) {
+				best, ok = candidate{route: route, pathSuffix: path[depth:]}, true
+				return true
+			}
+		}
+		return false
+	})
+	return best, ok
 }
 
 // Decides which API route to use for a given http.Request
@@ -62,84 +123,36 @@ func (router *Router) DecideRoute(r *http.Request) (Decision, error) {
 	}
 	slog.Debug("decideRoute: received input", "path", path)
 
-	cfg := router.Config()
+	idx := router.index()
 
-	if c, ok := matchExact(cfg, r, path); ok {
-		return finalize(cfg, c, r)
+	if c, ok := matchExact(idx, r, path); ok {
+		return finalize(idx, c, r)
 	}
 
-	if cs := matchPrefix(cfg, r, path); len(cs) > 0 {
-		if c, ok := pickBest(cs); ok {
-			return finalize(cfg, c, r)
-		}
+	if c, ok := matchPrefix(idx, r, path); ok {
+		return finalize(idx, c, r)
 	}
 
-	if c, ok := matchRegex(cfg, r, path); ok {
-		return finalize(cfg, c, r)
+	if c, ok := matchRegex(idx, r, path); ok {
+		return finalize(idx, c, r)
 	}
 
 	slog.Debug("decideRoute: no match", "path", path)
 	return Decision{}, errors.New("route not found")
 }
 
-// matchExact returns the first route whose Rule.Path equals path and whose
-// method/headers/hosts/CIDRs all match.
-func matchExact(cfg *config.Config, r *http.Request, path string) (candidate, bool) {
-	for i := range cfg.Routes {
-		route := &cfg.Routes[i]
-		if route.Rule.Path == "" || route.Rule.Path != path {
-			continue
-		}
-		if !matchConditions(route.Rule, r) {
-			continue
-		}
-		rewrite := effectiveRewrite(route.Rule)
-		return candidate{
-			route:       route,
-			pathSuffix:  "",
-			specificity: len(rewrite),
-		}, true
-	}
-	return candidate{}, false
+func matchExact(idx *routeIndex, r *http.Request, path string) (candidate, bool) {
+	return idx.MatchExact(r, path)
 }
 
-// matchPrefix returns every prefix route whose path prefix matches and whose
-// conditions all match. Candidates are unresolved.
-func matchPrefix(cfg *config.Config, r *http.Request, path string) []candidate {
-	var cs []candidate
-	for i := range cfg.Routes {
-		route := &cfg.Routes[i]
-		prefix := route.Rule.PathPrefix
-		if prefix == "" {
-			continue
-		}
-		if !strings.HasPrefix(path, prefix) {
-			continue
-		}
-		if !matchConditions(route.Rule, r) {
-			continue
-		}
-		slog.Debug("found prefix", "prefix", prefix, "path", path)
-		rewrite := effectiveRewrite(route.Rule)
-		suffix := path[len(prefix):]
-		cs = append(cs, candidate{
-			route:       route,
-			pathSuffix:  suffix,
-			specificity: len(rewrite + suffix),
-		})
-	}
-	return cs
+func matchPrefix(idx *routeIndex, r *http.Request, path string) (candidate, bool) {
+	return idx.MatchPrefix(r, path)
 }
 
-// matchRegex returns the *first* regex route (in cfg.Routes order) whose
-// compiled regex matches path and whose method/headers/hosts/CIDRs all
-// match.
-func matchRegex(cfg *config.Config, r *http.Request, path string) (candidate, bool) {
-	for i := range cfg.Routes {
-		route := &cfg.Routes[i]
-		if route.Rule.Regex == "" {
-			continue
-		}
+// matchRegex returns the *first* regex route (in config order) whose compiled
+// regex matches path and whose method/headers/hosts/CIDRs all match.
+func matchRegex(idx *routeIndex, r *http.Request, path string) (candidate, bool) {
+	for _, route := range idx.regex {
 		if !matchConditions(route.Rule, r) {
 			continue
 		}
@@ -269,22 +282,10 @@ func clientIPMatches(cidrs []string, remoteAddr string) bool {
 	return false
 }
 
-// pickBest selects the winning candidate.
-func pickBest(cs []candidate) (candidate, bool) {
-	// Looking for the longest URL
-	var best candidate
-	found := false
-	for _, c := range cs {
-		if !found || c.specificity > best.specificity {
-			best = c
-			found = true
-		}
-	}
-	return best, found
-}
-
 // finalize resolves the winning candidate into a Decision.
-func finalize(cfg *config.Config, c candidate, r *http.Request) (Decision, error) {
+func finalize(idx *routeIndex, c candidate, r *http.Request) (Decision, error) {
+	cfg := idx.cfg
+
 	host, err := resolveHost(cfg, c.route.Upstream)
 	if err != nil {
 		return Decision{}, err
@@ -425,7 +426,7 @@ func CreateFromConfig(ctx context.Context, configPath string) (*Router, error) {
 		for _, e := range errs {
 			slog.Error("config validation error", "err", e)
 		}
-		return nil, fmt.Errorf("invalid config")
+		return nil, errInvalidConfig
 	}
 
 	router, err := NewRouter(cfg)
@@ -611,9 +612,9 @@ func (router *Router) updateConfig() error {
 }
 
 func (router *Router) swapConfig(cfg *config.Config) {
-	router.atomicConfig.Store(cfg)
+	router.atomicIndex.Store(newRouteIndex(cfg))
 }
 
 func (router *Router) Config() *config.Config {
-	return router.atomicConfig.Load()
+	return router.index().cfg
 }

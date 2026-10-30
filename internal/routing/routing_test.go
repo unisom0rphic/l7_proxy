@@ -107,8 +107,8 @@ func TestDecideRoute_LongestPrefixWins(t *testing.T) {
 	))
 
 	cases := []struct{ path, want string }{
-		{"/api/v2/users", "http://a:11111/api/v2/users"},
-		{"/api/v2", "http://a:11111/api/v2"},
+		{"/api/v2/users", "http://b:2222/api/v2/users"},
+		{"/api/v2", "http://b:2222/api/v2"},
 		{"/api/other", "http://a:11111/api/other"},
 		{"/api", "http://a:11111/api"},
 	}
