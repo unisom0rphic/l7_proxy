@@ -117,6 +117,18 @@ author almost certainly meant OR, which needs separate routes.
 | `upstream` | string | yes | Mirror upstream name. Must exist in `upstreams`, must differ from the route's own upstream, and must not create a mirror cycle. |
 | `ratio` | float | no | Fraction of requests mirrored, `[0, 1]`. `0` mirrors nothing. |
 
+### Match precedence
+
+Routes are tried in order:
+
+1. `path` - exact match on the request path.
+2. `path-prefix` - the longest registered prefix of the request path wins. Routes that share a prefix are tried in config order.
+3. `regex` - the first matching rule in config order.
+
+Conditions (`method`, `headers`, `hosts`, `client-cidrs`) are evaluated per
+route: a longer prefix whose conditions fail does not shadow a shorter prefix
+that matches.
+
 ---
 
 ## Not yet configurable
