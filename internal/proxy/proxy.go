@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -28,6 +29,8 @@ type L7Proxy struct {
 	mux           *http.ServeMux
 	metrics       *metrics.RequestMetrics
 	infraConfig   *config.InfrastructureConfig
+	gate          Gate
+	limiter       Limiter
 }
 
 // Gate is the seam for the future circuit breaker. Allow reports whether an
@@ -162,6 +165,13 @@ func (p *L7Proxy) rewrite(pr *httputil.ProxyRequest) {
 	pr.Out.Body = io.NopCloser(bytes.NewReader(body))
 	if err != nil {
 		slog.Warn("unable to read request body, not mirroring", "error", err)
+	} else {
+		// The body is buffered, so a failed attempt can be replayed against
+		// the fallback. An absent GetBody marks a body that was not fully
+		// read, which failover refuses.
+		pr.Out.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}
 	}
 
 	pr.SetXForwarded()
@@ -186,6 +196,9 @@ func (p *L7Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error
 
 	var maxBytes *http.MaxBytesError
 	switch {
+	case errors.Is(err, errUpstreamUnavailable):
+		http.Error(w, "Upstream unavailable", http.StatusServiceUnavailable)
+		return
 	case errors.Is(err, context.DeadlineExceeded):
 		http.Error(w, "Request timed out on the server", http.StatusGatewayTimeout)
 		return
@@ -227,6 +240,135 @@ func (p *L7Proxy) buildTransport(infraConfig *config.InfrastructureConfig) *http
 	}
 }
 
+// errUpstreamUnavailable reports that no upstream could serve the request: the
+// limiter or the gate refused it, and no fallback was available. The error
+// handler maps it to 503.
+var errUpstreamUnavailable = errors.New("upstream unavailable")
+
+// attemptingTransport bounds every attempt with the routed upstream's timeout
+// and fails over to the configured fallback when the primary cannot be
+// reached. It wraps buildTransport, so all proxied requests go through it.
+type attemptingTransport struct {
+	base http.RoundTripper
+	p    *L7Proxy
+}
+
+func (t *attemptingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	decision, ok := req.Context().Value(decisionKey{}).(routing.Decision)
+	if !ok {
+		// Unreachable while ServeHTTP decides before handing over to the proxy.
+		return t.base.RoundTrip(req)
+	}
+
+	resp, err := t.attempt(req, decision.Upstream, decision.Target, decision.Timeout)
+	if err == nil {
+		return resp, nil
+	}
+
+	// The overall ceiling may already be spent, or the request may not be
+	// safe to replay: in either case retrying would only waste the budget.
+	if req.Context().Err() != nil || !canFailover(req, decision) {
+		return nil, err
+	}
+
+	slog.Warn("upstream attempt failed, falling back",
+		"upstream", decision.Upstream,
+		"fallback", decision.Fallback.Name,
+		"method", req.Method,
+		"error", err)
+
+	resp, ferr := t.attempt(req, decision.Fallback.Name, decision.Fallback.URL, decision.Fallback.Timeout)
+	if ferr != nil {
+		return nil, ferr
+	}
+	return resp, nil
+}
+
+// canFailover reports whether a failed request may be replayed against the
+// fallback: one is configured, the method is idempotent, and the body was
+// buffered so it can be sent again.
+func canFailover(req *http.Request, d routing.Decision) bool {
+	return d.Fallback != nil && idempotent(req.Method) && req.GetBody != nil
+}
+
+// attempt runs one upstream attempt, consulting the limiter and the gate
+// first. The outcome is recorded so a future breaker can trip on it. No second
+// failover happens here: a fallback is followed for one hop only.
+func (t *attemptingTransport) attempt(req *http.Request, name string, target *url.URL, timeout time.Duration) (*http.Response, error) {
+	if !t.p.limiter.Allow(name) || !t.p.gate.Allow(name) {
+		return nil, fmt.Errorf("%w: upstream %s", errUpstreamUnavailable, name)
+	}
+
+	resp, err := t.send(req, target, timeout)
+	t.p.gate.Record(name, err)
+	return resp, err
+}
+
+// send issues a single HTTP attempt against target under its own deadline. The
+// deadline is released once the response body is closed.
+func (t *attemptingTransport) send(req *http.Request, target *url.URL, timeout time.Duration) (*http.Response, error) {
+	ctx := req.Context()
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+	}
+
+	out := req.Clone(ctx)
+	u := *req.URL
+	u.Scheme = target.Scheme
+	u.Host = target.Host
+	out.URL = &u
+	out.Host = ""
+
+	if req.GetBody != nil {
+		body, err := req.GetBody()
+		if err != nil {
+			if cancel != nil {
+				cancel()
+			}
+			return nil, err
+		}
+		out.Body = body
+	}
+
+	resp, err := t.base.RoundTrip(out)
+	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
+		return nil, err
+	}
+	if cancel != nil {
+		resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+	}
+	return resp, nil
+}
+
+// cancelOnClose releases an attempt's deadline when its body is done, so the
+// timer does not linger for the rest of the timeout.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
+}
+
+// idempotent reports whether a failed request may be replayed on another
+// upstream. POST and PATCH are excluded because repeating them may duplicate
+// work.
+func idempotent(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete, http.MethodOptions, http.MethodTrace:
+		return true
+	default:
+		return false
+	}
+}
+
 func New(r *routing.Router, infraConfig *config.InfrastructureConfig, m *metrics.RequestMetrics, mirroringPool *mirroring.Pool) *L7Proxy {
 	slog.Debug("INFRASTRUCTURE CONFIG", "config", infraConfig)
 
@@ -235,11 +377,13 @@ func New(r *routing.Router, infraConfig *config.InfrastructureConfig, m *metrics
 		metrics:       m,
 		mirroringPool: mirroringPool,
 		infraConfig:   infraConfig,
+		gate:          allowAllGate{},
+		limiter:       unlimitedLimiter{},
 	}
 
 	proxy.rp = &httputil.ReverseProxy{
 		Rewrite:        proxy.rewrite,
-		Transport:      proxy.buildTransport(infraConfig),
+		Transport:      &attemptingTransport{base: proxy.buildTransport(infraConfig), p: proxy},
 		ErrorHandler:   proxy.errorHandler,
 		ModifyResponse: proxy.modifyResponse,
 	}
