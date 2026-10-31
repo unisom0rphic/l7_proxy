@@ -38,6 +38,15 @@ type Decision struct {
 	Timeout  time.Duration
 	Target   *url.URL
 	Mirrors  []mirroring.Target
+	Fallback *FailoverTarget
+}
+
+// FailoverTarget is the resolved alternative upstream for a decision: the host
+// and per-attempt timeout to use when the primary cannot be reached.
+type FailoverTarget struct {
+	Name    string
+	URL     *url.URL
+	Timeout time.Duration
 }
 
 type candidate struct {
@@ -314,7 +323,13 @@ func finalize(idx *routeIndex, c candidate, r *http.Request) (Decision, error) {
 	}
 
 	slog.Debug("decideRoute: route found", "host", host, "mirrors", len(mirrors))
-	return Decision{Upstream: c.route.Upstream, Timeout: timeout, Target: target, Mirrors: mirrors}, nil
+	return Decision{
+		Upstream: c.route.Upstream,
+		Timeout:  timeout,
+		Target:   target,
+		Mirrors:  mirrors,
+		Fallback: idx.failoverTarget(c.route.Upstream),
+	}, nil
 }
 
 // upstreamTimeout returns the per-attempt timeout for a named upstream, or 0
@@ -325,6 +340,31 @@ func (idx *routeIndex) upstreamTimeout(name string) time.Duration {
 		return 0
 	}
 	return time.Duration(up.Timeout) * time.Millisecond
+}
+
+// failoverTarget resolves the fallback configured for a named upstream, or nil
+// when it has none. Failures past this point mean the config was assembled
+// without Validate, which rejects an unknown fallback name.
+func (idx *routeIndex) failoverTarget(name string) *FailoverTarget {
+	up, ok := idx.upstreams[name]
+	if !ok || up.Fallback == "" {
+		return nil
+	}
+	target, ok := idx.upstreams[up.Fallback]
+	if !ok {
+		slog.Error("decideRoute: fallback upstream not found", "upstream", name, "fallback", up.Fallback)
+		return nil
+	}
+	host, ok := idx.cfg.NameToHost[target.Name]
+	if !ok {
+		slog.Error("decideRoute: fallback host not mapped during config parse", "fallback", target.Name)
+		return nil
+	}
+	return &FailoverTarget{
+		Name:    target.Name,
+		URL:     host,
+		Timeout: idx.upstreamTimeout(target.Name),
+	}
 }
 
 func resolveHost(cfg *config.Config, name string) (*url.URL, error) {
