@@ -30,6 +30,35 @@ type L7Proxy struct {
 	infraConfig   *config.InfrastructureConfig
 }
 
+// Gate is the seam for the future circuit breaker. Allow reports whether an
+// upstream may serve a request; Record feeds the outcome of an attempt back so
+// the gate can trip after repeated failures. A real implementation belongs in
+// internal/policy; until then the default admits everything.
+type Gate interface {
+	Allow(upstream string) bool
+	Record(upstream string, err error)
+}
+
+// Limiter is the seam for the future rate limiter. Allow reports whether an
+// upstream has capacity for another request. A real implementation belongs in
+// internal/policy; until then the default admits everything.
+type Limiter interface {
+	Allow(upstream string) bool
+}
+
+// allowAllGate is the default Gate: every upstream is admitted and outcomes
+// are discarded, so a deployment without a policy layer behaves as if no
+// breaker exists.
+type allowAllGate struct{}
+
+func (allowAllGate) Allow(string) bool    { return true }
+func (allowAllGate) Record(string, error) {}
+
+// unlimitedLimiter is the default Limiter: every upstream always has capacity.
+type unlimitedLimiter struct{}
+
+func (unlimitedLimiter) Allow(string) bool { return true }
+
 type responseWriter struct {
 	http.ResponseWriter
 	statusCode int
