@@ -311,11 +311,11 @@ func finalize(idx *routeIndex, c candidate, r *http.Request) (Decision, error) {
 	return Decision{Upstream: c.route.Upstream, Timeout: timeout, Target: target, Mirrors: mirrors}, nil
 }
 
-// Searches timeout for current upstream (linearly)
+// Searches timeout for current upstream (linearly). Returns time in ms.
 func discoverTimeout(cfg *config.Config, up string) time.Duration {
 	for _, u := range cfg.Upstreams {
 		if u.Name == up {
-			return time.Duration(u.Timeout)
+			return time.Duration(u.Timeout) * time.Millisecond
 		}
 	}
 	return 0
