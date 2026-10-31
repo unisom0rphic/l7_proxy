@@ -1,6 +1,6 @@
 # ADR-0004: Linear scan for prefix routing (temporary)
 
-**Status**: Accepted
+**Status**: Superseded by ADR-0012
 **Date**: 2026-10-03
 
 ## Context

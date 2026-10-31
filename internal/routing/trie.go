@@ -1,110 +1,50 @@
 package routing
 
+import "github.com/unisom0rphic/l7proxy/internal/config"
+
+// trie maps path prefixes to the routes registered for them. Nodes are keyed by
+// byte, so a lookup walks the request path once, independent of the prefix count.
+type trie struct {
+	root *trieNode
+}
+
 type trieNode struct {
 	children [256]*trieNode
-	size     int
-	end      bool
+	routes   []*config.Route
 }
 
-func newNode() *trieNode {
-	return &trieNode{}
+func newTrie() *trie {
+	return &trie{root: &trieNode{}}
 }
 
-type Trie struct {
-	root *trieNode
-	size int
-}
-
-func (tr *Trie) Insert(word string) {
-	cur := tr.root
-	for c := 0; c < len(word); c++ {
-		if cur.children[word[c]] == nil {
-			cur.children[word[c]] = newNode()
-			cur.size++
-		}
-		cur = cur.children[word[c]]
-	}
-	if !cur.end {
-		cur.end = true
-		tr.size++
-	}
-}
-
-func (tr *Trie) Search(word string) bool {
-	if word == "" {
-		return true
-	}
-	cur := tr.root
-	for c := 0; c < len(word); c++ {
-		if cur.children[word[c]] == nil {
-			return false
-		}
-		cur = cur.children[word[c]]
-	}
-	return cur.end
-}
-
-func (tr *Trie) StartsWith(prefix string) bool {
-	cur := tr.root
-	for c := 0; c < len(prefix); c++ {
-		if cur.children[prefix[c]] == nil {
-			return false
-		}
-		cur = cur.children[prefix[c]]
-	}
-	return true
-}
-
-type Triplet struct {
-	node  *trieNode
-	ch    byte
-	child *trieNode
-}
-
-func (tr *Trie) Delete(word string) bool {
-	if word == "" {
-		if tr.root.end {
-			tr.root.end = false
-			return true
-		}
-		return false
-	}
-
-	path := make([]Triplet, 0, len(word))
+// insert appends route to the node for prefix, preserving insertion order.
+func (tr *trie) insert(prefix string, route *config.Route) {
 	node := tr.root
-	for c := 0; c < len(word); c++ {
-		child := node.children[word[c]]
+	for i := 0; i < len(prefix); i++ {
+		child := node.children[prefix[i]]
 		if child == nil {
-			return false
+			child = &trieNode{}
+			node.children[prefix[i]] = child
 		}
-		path = append(path, Triplet{node, word[c], child})
 		node = child
 	}
+	node.routes = append(node.routes, route)
+}
 
-	if !node.end {
-		return false
-	}
+// match calls yield for every node on the way down path, so the longest registered
+// prefix is offered first, and stops as soon as yield returns true. depth is the
+// length of the prefix ending at that node.
+func (tr *trie) match(path string, yield func(routes []*config.Route, depth int) bool) bool {
+	return tr.root.match(path, 0, yield)
+}
 
-	node.end = false
-
-	for i := len(path) - 1; i >= 0; i-- {
-		t := path[i]
-		if t.child.end || t.child.size > 0 {
-			break
+func (n *trieNode) match(path string, depth int, yield func([]*config.Route, int) bool) bool {
+	if depth < len(path) {
+		if child := n.children[path[depth]]; child != nil {
+			if child.match(path, depth+1, yield) {
+				return true
+			}
 		}
-		t.node.children[t.ch] = nil
-		t.node.size--
 	}
-
-	return true
-}
-
-func (tr *Trie) Size() int {
-	return tr.size
-}
-
-func NewTrie() Trie {
-	return Trie{
-		root: newNode(),
-	}
+	return len(n.routes) > 0 && yield(n.routes, depth)
 }
