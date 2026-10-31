@@ -8,6 +8,10 @@ upstreams:
   - name: orders
     host: http://orders:3003
     timeout-ms: 500
+    fallback: orders-backup
+  - name: orders-backup
+    host: http://orders-backup:3004
+    timeout-ms: 500
 
 routes:
   - rules:
