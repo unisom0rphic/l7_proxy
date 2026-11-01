@@ -38,6 +38,13 @@ const smokeRoutesYAML = `upstreams:
   - name: orders
     host: %s
     timeout-ms: 500
+  - name: dead
+    host: %s
+    timeout-ms: 500
+    fallback: rescue
+  - name: rescue
+    host: %s
+    timeout-ms: 500
 
 routes:
   - rules:
@@ -51,6 +58,10 @@ routes:
       path-prefix: /orders
       rewrite: /api/orders
     upstream: orders
+
+  - rules:
+      path-prefix: /dead
+    upstream: dead
 `
 
 const smokeInfraYAML = `net-timeouts-s:
@@ -89,17 +100,23 @@ func TestSmoke_EndToEnd(t *testing.T) {
 	prodSeen := make(chan backendRequest, 4)
 	mirrorSeen := make(chan backendRequest, 4)
 	ordersSeen := make(chan backendRequest, 4)
+	rescueSeen := make(chan backendRequest, 4)
 
 	prod := newSmokeBackend(t, "users-prod", prodSeen)
 	mirrorBackend := newSmokeBackend(t, "users-test", mirrorSeen)
 	orders := newSmokeBackend(t, "orders", ordersSeen)
+	rescue := newSmokeBackend(t, "rescue", rescueSeen)
 
 	dir := t.TempDir()
 	routesPath := filepath.Join(dir, "routes.yaml")
 	infraPath := filepath.Join(dir, "infrastructure.yaml")
 	port := freePort(t)
 
-	writeFile(t, routesPath, fmt.Sprintf(smokeRoutesYAML, prod.URL, mirrorBackend.URL, orders.URL))
+	// A reserved-then-released port refuses connections, which is the failover
+	// trigger for the dead upstream.
+	deadURL := "http://127.0.0.1:" + strconv.Itoa(freePort(t))
+
+	writeFile(t, routesPath, fmt.Sprintf(smokeRoutesYAML, prod.URL, mirrorBackend.URL, orders.URL, deadURL, rescue.URL))
 	writeFile(t, infraPath, fmt.Sprintf(smokeInfraYAML, port))
 
 	infraConfig, err := config.ParseInfrastructureConfig(infraPath)
@@ -172,6 +189,15 @@ func TestSmoke_EndToEnd(t *testing.T) {
 
 	if code, _ := smokeDo(t, http.MethodGet, base+"/nope", ""); code != http.StatusNotFound {
 		t.Errorf("GET /nope: want 404, got %d", code)
+	}
+
+	// Failover: the primary refuses connections, so a GET lands on the
+	// configured fallback with the outbound path preserved.
+	if code, body := smokeDo(t, http.MethodGet, base+"/dead/9", ""); code != http.StatusOK || body != "rescue:/dead/9" {
+		t.Errorf("GET /dead/9: want failover to rescue, got status %d, body %q", code, body)
+	}
+	if rescueReq := nextRequest(t, rescueSeen, "rescue"); rescueReq.path != "/dead/9" {
+		t.Errorf("rescue received %+v", rescueReq)
 	}
 
 	// Metrics: the upstream name is the label, the path is not.

@@ -29,9 +29,10 @@ type ServerTimeouts struct {
 }
 
 type Upstream struct {
-	Name    string `yaml:"name"`
-	Host    string `yaml:"host"`
-	Timeout int    `yaml:"timeout-ms"`
+	Name     string `yaml:"name"`
+	Host     string `yaml:"host"`
+	Timeout  int    `yaml:"timeout-ms"`
+	Fallback string `yaml:"fallback,omitempty"`
 }
 
 type HeaderOp string
@@ -183,6 +184,24 @@ func validateUpstreams(upstreams []Upstream) []error {
 			errs = append(errs, fmt.Errorf("upstreams[%d] (%s): timeout-ms must be >= 0, got %d", i, u.Name, u.Timeout))
 		}
 	}
+
+	// A fallback may name an upstream defined later in the list, so names are
+	// all collected before any fallback is checked. There is nothing to
+	// recurse through: a fallback is one field and is followed for one hop
+	// only, so mutual references are legal and no cycle check is needed.
+	for i, u := range upstreams {
+		if u.Fallback == "" {
+			continue
+		}
+		if u.Fallback == u.Name {
+			errs = append(errs, fmt.Errorf("upstreams[%d] (%s): fallback must not reference the upstream itself", i, u.Name))
+			continue
+		}
+		if _, ok := seen[u.Fallback]; !ok {
+			errs = append(errs, fmt.Errorf("upstreams[%d] (%s): fallback points to unknown upstream %q", i, u.Name, u.Fallback))
+		}
+	}
+
 	return errs
 }
 

@@ -39,7 +39,7 @@ error, so a typo never silently turns into a zero value.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `context` | int (s) | - | Per-request context timeout. Must be greater than 0: a zero deadline cancels every request immediately. |
+| `context` | int (s) | - | Overall per-request timeout. It is the ceiling for the whole request, including every upstream attempt and any fallback. Must be greater than 0: a zero deadline cancels every request immediately. |
 | `read-header` | int (s) | 0 (no timeout) | Time to read request headers. |
 | `idle` | int (s) | 0 (Go default) | Idle connection timeout. |
 
@@ -74,7 +74,29 @@ error, so a typo never silently turns into a zero value.
 |---|---|---|---|
 | `name` | string | yes | Unique upstream name. |
 | `host` | string | yes | Base URL, must include scheme and port (`http://host:3001`). No path, query, or fragment. |
-| `timeout-ms` | int (ms) | yes | Request timeout to this upstream. |
+| `timeout-ms` | int (ms) | no | Per-attempt timeout for this upstream. `0` (or unset) inherits the server context timeout. |
+| `fallback` | string | no | Upstream to try once when this one cannot be reached. Must exist in `upstreams` and must not name the upstream itself. |
+
+#### Upstream timeouts and fallback
+
+`timeout-ms` bounds a single attempt against the upstream: dial, response
+headers, and body. It does not extend the request as a whole - the server
+context timeout stays the ceiling, so a slow primary plus a fallback still have
+to fit inside it. `0` leaves the attempt bounded only by the ceiling.
+
+`fallback` names a second upstream to try once when the primary cannot be
+reached: a dial, DNS, or TLS failure, a refused connection, or the per-attempt
+timeout firing. Failover is narrow by design:
+
+- only idempotent methods (GET, HEAD, PUT, DELETE, OPTIONS, TRACE) are replayed,
+  so a POST or PATCH is never duplicated;
+- the body must have been buffered, otherwise the request cannot be sent again;
+- a reachable upstream answering 5xx is not a failure - the response is
+  returned as-is;
+- the request is not mirrored to the fallback, and the fallback is followed for
+  one hop only.
+
+See [`request-flow.md`](./request-flow.md) for the full lifecycle.
 
 ### `routes[]`
 
@@ -155,3 +177,4 @@ Tracked in the roadmap; will be added:
 
 - `max_body_size` - mirror body buffer limit
 - hot-reload debounce window
+- per-upstream circuit breaker and rate limiter settings

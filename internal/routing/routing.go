@@ -38,6 +38,15 @@ type Decision struct {
 	Timeout  time.Duration
 	Target   *url.URL
 	Mirrors  []mirroring.Target
+	Fallback *FailoverTarget
+}
+
+// FailoverTarget is the resolved alternative upstream for a decision: the host
+// and per-attempt timeout to use when the primary cannot be reached.
+type FailoverTarget struct {
+	Name    string
+	URL     *url.URL
+	Timeout time.Duration
 }
 
 type candidate struct {
@@ -50,17 +59,23 @@ type candidate struct {
 // they match. It is immutable once built, so a reload publishes a new one with a
 // single atomic store.
 type routeIndex struct {
-	cfg    *config.Config
-	exact  map[string][]*config.Route
-	prefix *trie
-	regex  []*config.Route
+	cfg       *config.Config
+	upstreams map[string]*config.Upstream
+	exact     map[string][]*config.Route
+	prefix    *trie
+	regex     []*config.Route
 }
 
 func newRouteIndex(cfg *config.Config) *routeIndex {
 	idx := &routeIndex{
-		cfg:    cfg,
-		exact:  make(map[string][]*config.Route),
-		prefix: newTrie(),
+		cfg:       cfg,
+		upstreams: make(map[string]*config.Upstream, len(cfg.Upstreams)),
+		exact:     make(map[string][]*config.Route),
+		prefix:    newTrie(),
+	}
+	for i := range cfg.Upstreams {
+		up := &cfg.Upstreams[i]
+		idx.upstreams[up.Name] = up
 	}
 	for i := range cfg.Routes {
 		route := &cfg.Routes[i]
@@ -300,7 +315,7 @@ func finalize(idx *routeIndex, c candidate, r *http.Request) (Decision, error) {
 		target = buildTarget(host, rewrite, c.pathSuffix, r.URL.RawQuery)
 	}
 
-	timeout := discoverTimeout(cfg, c.route.Upstream)
+	timeout := idx.upstreamTimeout(c.route.Upstream)
 
 	mirrors, err := resolveMirrors(cfg, c.route.Mirrors)
 	if err != nil {
@@ -308,17 +323,48 @@ func finalize(idx *routeIndex, c candidate, r *http.Request) (Decision, error) {
 	}
 
 	slog.Debug("decideRoute: route found", "host", host, "mirrors", len(mirrors))
-	return Decision{Upstream: c.route.Upstream, Timeout: timeout, Target: target, Mirrors: mirrors}, nil
+	return Decision{
+		Upstream: c.route.Upstream,
+		Timeout:  timeout,
+		Target:   target,
+		Mirrors:  mirrors,
+		Fallback: idx.failoverTarget(c.route.Upstream),
+	}, nil
 }
 
-// Searches timeout for current upstream (linearly)
-func discoverTimeout(cfg *config.Config, up string) time.Duration {
-	for _, u := range cfg.Upstreams {
-		if u.Name == up {
-			return time.Duration(u.Timeout)
-		}
+// upstreamTimeout returns the per-attempt timeout for a named upstream, or 0
+// when the upstream or its timeout is unset.
+func (idx *routeIndex) upstreamTimeout(name string) time.Duration {
+	up, ok := idx.upstreams[name]
+	if !ok {
+		return 0
 	}
-	return 0
+	return time.Duration(up.Timeout) * time.Millisecond
+}
+
+// failoverTarget resolves the fallback configured for a named upstream, or nil
+// when it has none. Failures past this point mean the config was assembled
+// without Validate, which rejects an unknown fallback name.
+func (idx *routeIndex) failoverTarget(name string) *FailoverTarget {
+	up, ok := idx.upstreams[name]
+	if !ok || up.Fallback == "" {
+		return nil
+	}
+	target, ok := idx.upstreams[up.Fallback]
+	if !ok {
+		slog.Error("decideRoute: fallback upstream not found", "upstream", name, "fallback", up.Fallback)
+		return nil
+	}
+	host, ok := idx.cfg.NameToHost[target.Name]
+	if !ok {
+		slog.Error("decideRoute: fallback host not mapped during config parse", "fallback", target.Name)
+		return nil
+	}
+	return &FailoverTarget{
+		Name:    target.Name,
+		URL:     host,
+		Timeout: idx.upstreamTimeout(target.Name),
+	}
 }
 
 func resolveHost(cfg *config.Config, name string) (*url.URL, error) {

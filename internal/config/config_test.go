@@ -104,6 +104,39 @@ func TestValidate_AcceptsDifferentMethodsSamePath(t *testing.T) {
 	wantOK(t, cfg)
 }
 
+func TestValidate_AcceptsFallback(t *testing.T) {
+	cfg := validConfig()
+	cfg.Upstreams[0].Fallback = "b"
+	wantOK(t, cfg)
+}
+
+// Fallback is followed for one hop only, so mutual references are legal.
+func TestValidate_AcceptsMutualFallback(t *testing.T) {
+	cfg := validConfig()
+	cfg.Upstreams[0].Fallback = "b"
+	cfg.Upstreams[1].Fallback = "a"
+	wantOK(t, cfg)
+}
+
+func TestValidate_RejectsFallback(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{"fallback points to unknown upstream",
+			func(c *Config) { c.Upstreams[0].Fallback = "ghost" }},
+		{"fallback references the upstream itself",
+			func(c *Config) { c.Upstreams[0].Fallback = "a" }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			tc.mutate(cfg)
+			wantErr(t, cfg)
+		})
+	}
+}
+
 func TestValidate_RejectsStructure(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -443,6 +476,32 @@ routes:
 	}
 	if rt.Upstream != "a" {
 		t.Errorf("route.upstream: want a, got %q", rt.Upstream)
+	}
+}
+
+func TestParseConfig_FallbackField(t *testing.T) {
+	text := `upstreams:
+  - name: a
+    host: http://srv-a:1111
+    timeout-ms: 300
+    fallback: b
+  - name: b
+    host: http://srv-b:2222
+    timeout-ms: 300
+routes:
+  - rules:
+      path-prefix: /v1
+    upstream: a
+`
+	cfg, err := ParseConfig(writeTmpConfig(t, text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Upstreams[0].Fallback; got != "b" {
+		t.Errorf("fallback: want b, got %q", got)
+	}
+	if got := cfg.Upstreams[1].Fallback; got != "" {
+		t.Errorf("fallback: want empty, got %q", got)
 	}
 }
 

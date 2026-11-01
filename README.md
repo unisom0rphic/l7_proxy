@@ -8,6 +8,7 @@ An L7 HTTP reverse proxy in Go: routing, hot-reloadable config, and traffic mirr
 - Hot reload without restart; invalid configs are rejected, last known-good stays live
 - Forwarding via `net/http/httputil.ReverseProxy` - hop-by-hop headers stripped, `X-Forwarded-*` set
 - Configurable transport and server timeouts
+- Per-upstream attempt timeouts, with optional failover to a fallback upstream
 - Graceful shutdown on `SIGTERM`
 - Non-blocking traffic mirroring
 - Prometheus metrics: requests, latency, mirroring outcomes, failed config reloads
@@ -64,6 +65,10 @@ upstreams:
   - name: orders
     host: http://orders:3003
     timeout-ms: 2000
+    fallback: orders-backup
+  - name: orders-backup
+    host: http://orders-backup:3004
+    timeout-ms: 2000
 
 routes:
   - rules:
@@ -86,7 +91,7 @@ The list of possible configuration options is listed in [`docs/configuration`](d
 
 ## Hot Reload
 
-Routing configuration (`routes.yaml`) is hot-reloadable via `fsnotify` or `SIGHUP` + debounce. Config is swapped via `atomic.Pointer[Config]`. Missing file at startup panics; missing file at runtime keeps the last known-good config.
+Routing configuration (`routes.yaml`) is hot-reloadable via `fsnotify` or `SIGHUP` + debounce. The compiled routing index is swapped through an `atomic.Pointer[routeIndex]`, so a request never sees a half-applied config. Missing file at startup panics; missing file at runtime keeps the last known-good config.
 
 Infrastructure configuration (`infrastructure.yaml`) requires a restart to apply changes.
 
@@ -109,7 +114,9 @@ go test ./... && go test -race ./...
 
 ## Docs
 
-Architecture decisions live in [`docs/decisions`](/docs/decisions).
+- [`docs/configuration.md`](docs/configuration.md) - every configuration key.
+- [`docs/request-flow.md`](docs/request-flow.md) - the request lifecycle, timeouts, and failover.
+- [`docs/decisions`](docs/decisions) - architecture decision records.
 
 ## License
 

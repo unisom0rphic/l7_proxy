@@ -119,6 +119,68 @@ func TestDecideRoute_LongestPrefixWins(t *testing.T) {
 	}
 }
 
+func TestDecideRoute_TimeoutFromMap(t *testing.T) {
+	r := newTestRouter(t, testConfig(
+		[]config.Upstream{upstream("a", "http://a:1111")},
+		[]config.Route{prefixRoute("/api", "a")},
+	))
+
+	d, err := r.DecideRoute(request(t, "GET", "/api/users", nil))
+	if err != nil {
+		t.Fatalf("DecideRoute: %v", err)
+	}
+	if want := 300 * time.Millisecond; d.Timeout != want {
+		t.Errorf("Timeout: want %v, got %v", want, d.Timeout)
+	}
+}
+
+func TestDecideRoute_FallbackResolved(t *testing.T) {
+	primary := upstream("a", "http://a:1111")
+	primary.Fallback = "b"
+	fallback := upstream("b", "http://b:2222")
+	fallback.Timeout = 750
+
+	r := newTestRouter(t, testConfig(
+		[]config.Upstream{primary, fallback},
+		[]config.Route{prefixRoute("/api", "a")},
+	))
+
+	d, err := r.DecideRoute(request(t, "GET", "/api/users", nil))
+	if err != nil {
+		t.Fatalf("DecideRoute: %v", err)
+	}
+	if d.Target.String() != "http://a:1111/api/users" {
+		t.Errorf("Target: want primary %q, got %q", "http://a:1111/api/users", d.Target)
+	}
+	if d.Fallback == nil {
+		t.Fatal("Fallback: want resolved target, got nil")
+	}
+	if d.Fallback.Name != "b" {
+		t.Errorf("Fallback.Name: want %q, got %q", "b", d.Fallback.Name)
+	}
+	if got := d.Fallback.URL.String(); got != "http://b:2222" {
+		t.Errorf("Fallback.URL: want %q, got %q", "http://b:2222", got)
+	}
+	if want := 750 * time.Millisecond; d.Fallback.Timeout != want {
+		t.Errorf("Fallback.Timeout: want %v, got %v", want, d.Fallback.Timeout)
+	}
+}
+
+func TestDecideRoute_NoFallback(t *testing.T) {
+	r := newTestRouter(t, testConfig(
+		[]config.Upstream{upstream("a", "http://a:1111")},
+		[]config.Route{prefixRoute("/api", "a")},
+	))
+
+	d, err := r.DecideRoute(request(t, "GET", "/api/users", nil))
+	if err != nil {
+		t.Fatalf("DecideRoute: %v", err)
+	}
+	if d.Fallback != nil {
+		t.Errorf("Fallback: want nil, got %+v", d.Fallback)
+	}
+}
+
 func TestDecideRoute_NoMatch(t *testing.T) {
 	r := newTestRouter(t, testConfig(
 		[]config.Upstream{upstream("a", "http://a:1111")},
