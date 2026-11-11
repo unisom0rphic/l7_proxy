@@ -18,6 +18,7 @@ import (
 	"github.com/unisom0rphic/l7proxy/internal/config"
 	"github.com/unisom0rphic/l7proxy/internal/metrics"
 	"github.com/unisom0rphic/l7proxy/internal/mirroring"
+	"github.com/unisom0rphic/l7proxy/internal/ratelimit"
 	"github.com/unisom0rphic/l7proxy/internal/routing"
 )
 
@@ -42,9 +43,9 @@ type Gate interface {
 	Record(upstream string, err error)
 }
 
-// Limiter is the seam for the future rate limiter. Allow reports whether an
-// upstream has capacity for another request. A real implementation belongs in
-// internal/policy; until then the default admits everything.
+// Limiter reports whether an upstream has capacity for another request.
+// The token-bucket implementation lives in internal/ratelimit; the default
+// admits everything.
 type Limiter interface {
 	Allow(upstream string) bool
 }
@@ -196,6 +197,9 @@ func (p *L7Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error
 
 	var maxBytes *http.MaxBytesError
 	switch {
+	case errors.Is(err, errRateLimited):
+		http.Error(w, "Too many requests", http.StatusTooManyRequests)
+		return
 	case errors.Is(err, errUpstreamUnavailable):
 		http.Error(w, "Upstream unavailable", http.StatusServiceUnavailable)
 		return
@@ -240,10 +244,9 @@ func (p *L7Proxy) buildTransport(infraConfig *config.InfrastructureConfig) *http
 	}
 }
 
-// errUpstreamUnavailable reports that no upstream could serve the request: the
-// limiter or the gate refused it, and no fallback was available. The error
-// handler maps it to 503.
 var errUpstreamUnavailable = errors.New("upstream unavailable")
+
+var errRateLimited = errors.New("rate limited")
 
 // attemptingTransport bounds every attempt with the routed upstream's timeout
 // and fails over to the configured fallback when the primary cannot be
@@ -295,7 +298,10 @@ func canFailover(req *http.Request, d routing.Decision) bool {
 // first. The outcome is recorded so a future breaker can trip on it. No second
 // failover happens here: a fallback is followed for one hop only.
 func (t *attemptingTransport) attempt(req *http.Request, name string, target *url.URL, timeout time.Duration) (*http.Response, error) {
-	if !t.p.limiter.Allow(name) || !t.p.gate.Allow(name) {
+	if !t.p.limiter.Allow(name) {
+		return nil, fmt.Errorf("%w: upstream %s", errRateLimited, name)
+	}
+	if !t.p.gate.Allow(name) {
 		return nil, fmt.Errorf("%w: upstream %s", errUpstreamUnavailable, name)
 	}
 
@@ -372,13 +378,22 @@ func idempotent(method string) bool {
 func New(r *routing.Router, infraConfig *config.InfrastructureConfig, m *metrics.RequestMetrics, mirroringPool *mirroring.Pool) *L7Proxy {
 	slog.Debug("INFRASTRUCTURE CONFIG", "config", infraConfig)
 
+	var limiter Limiter = unlimitedLimiter{}
+	if infraConfig.RateLimit.Enabled {
+		rl, err := ratelimit.New(infraConfig.RateLimit)
+		if err != nil {
+			panic(fmt.Sprintf("rate limiter: %v", err))
+		}
+		limiter = rl
+	}
+
 	proxy := &L7Proxy{
 		router:        r,
 		metrics:       m,
 		mirroringPool: mirroringPool,
 		infraConfig:   infraConfig,
 		gate:          allowAllGate{},
-		limiter:       unlimitedLimiter{},
+		limiter:       limiter,
 	}
 
 	proxy.rp = &httputil.ReverseProxy{
