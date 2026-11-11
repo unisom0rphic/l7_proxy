@@ -217,6 +217,7 @@ func TestProxy_HangBodyTimesOut(t *testing.T) {
 
 	if resp == nil {
 		t.Fatal("Get returned nil response with nil error")
+		return
 	}
 	defer resp.Body.Close()
 

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/unisom0rphic/l7proxy/internal/ratelimit"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -106,10 +107,11 @@ type InfrastructureConfig struct {
 		Transport TransportTimeouts `yaml:"transport"`
 		Server    ServerTimeouts    `yaml:"server"`
 	} `yaml:"net-timeouts-s"`
-	ConnectionPool ConnectionPool  `yaml:"connection-pool"`
-	Mirroring      MirroringConfig `yaml:"mirroring"`
-	Port           string          `yaml:"port"`
-	MaxBodySize    int64           `yaml:"max-body-size"`
+	ConnectionPool ConnectionPool   `yaml:"connection-pool"`
+	Mirroring      MirroringConfig  `yaml:"mirroring"`
+	RateLimit      ratelimit.Config `yaml:"rate-limit"`
+	Port           string           `yaml:"port"`
+	MaxBodySize    int64            `yaml:"max-body-size"`
 }
 
 type Config struct {
@@ -632,6 +634,7 @@ func (cfg *InfrastructureConfig) Validate() []error {
 	errs = append(errs, validateConnectionPool(cfg)...)
 	errs = append(errs, validateMirroringConfig(cfg)...)
 	errs = append(errs, validateMaxBodySize(cfg)...)
+	errs = append(errs, ratelimit.ValidateConfig(cfg.RateLimit)...)
 	return errs
 }
 

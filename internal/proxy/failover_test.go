@@ -257,7 +257,7 @@ func TestTransport_AllUpstreamsUnavailable(t *testing.T) {
 	}
 }
 
-func TestTransport_LimiterDenialIsUnavailable(t *testing.T) {
+func TestTransport_LimiterDenialIsRateLimited(t *testing.T) {
 	d := routing.Decision{
 		Upstream: "primary",
 		Target:   mustParse(t, "http://127.0.0.1:1/api/x"),
@@ -265,8 +265,8 @@ func TestTransport_LimiterDenialIsUnavailable(t *testing.T) {
 	}
 
 	tr := newTestTransport(&fakeGate{}, &fakeLimiter{deny: map[string]bool{"primary": true}})
-	if _, err := tr.RoundTrip(decisionRequest(t, http.MethodGet, nil, d, true)); !errors.Is(err, errUpstreamUnavailable) {
-		t.Fatalf("want errUpstreamUnavailable, got %v", err)
+	if _, err := tr.RoundTrip(decisionRequest(t, http.MethodGet, nil, d, true)); !errors.Is(err, errRateLimited) {
+		t.Fatalf("want errRateLimited, got %v", err)
 	}
 }
 
@@ -303,6 +303,7 @@ func TestErrorHandler_StatusMapping(t *testing.T) {
 		err  error
 		want int
 	}{
+		{"rate limited", errRateLimited, http.StatusTooManyRequests},
 		{"upstream unavailable", errUpstreamUnavailable, http.StatusServiceUnavailable},
 		{"deadline exceeded", context.DeadlineExceeded, http.StatusGatewayTimeout},
 		{"body too large", &http.MaxBytesError{Limit: 1}, http.StatusRequestEntityTooLarge},
