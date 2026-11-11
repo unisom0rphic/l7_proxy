@@ -21,6 +21,7 @@ error, so a typo never silently turns into a zero value.
 | `net-timeouts-s` | object | no | Network timeouts in seconds. |
 | `connection-pool` | object | no | HTTP transport connection pool settings. |
 | `mirroring` | object | no | Mirroring worker and queue configuration. |
+| `rate-limit` | object | no | Per-upstream rate limiting. Disabled by default. See [Rate Limiting](rate-limiting.md). |
 | `port` | string | no | Server listen port. The example config sets `"8080"`. |
 
 ### `net-timeouts-s`
@@ -56,6 +57,21 @@ error, so a typo never silently turns into a zero value.
 |---|---|---|---|
 | `workers` | int | 10 | Number of mirroring worker goroutines. `0` or unset uses the default. |
 | `queue-size` | int | 100 | Size of the mirroring job queue. `0` or unset uses the default. |
+
+### `rate-limit`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Enable per-upstream rate limiting. |
+| `algorithm` | string | `token_bucket` | Algorithm name. Currently only `token_bucket` is supported. |
+| `token-bucket.refill-rate` | float | `10` | Tokens added per second. |
+| `token-bucket.bucket-size` | int | `20` | Maximum tokens, i.e. the burst size. |
+
+Algorithm-specific parameters share a name with the algorithm
+(`token-bucket`, `leaky-bucket`, ...). Zero values use the defaults above;
+negative values and non-finite refill rates are rejected. See
+[Rate Limiting](rate-limiting.md) for the algorithm interface and validation
+rules.
 
 ---
 

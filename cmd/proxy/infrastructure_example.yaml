@@ -18,5 +18,12 @@ mirroring:
   workers: 10
   queue-size: 100
 
+rate-limit:
+  enabled: false
+  algorithm: token_bucket
+  token-bucket:
+    refill-rate: 10
+    bucket-size: 20
+
 port: "8080"
 max-body-size: 4096  # bytes

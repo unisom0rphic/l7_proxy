@@ -9,6 +9,7 @@ An L7 HTTP reverse proxy in Go: routing, hot-reloadable config, and traffic mirr
 - Forwarding via `net/http/httputil.ReverseProxy` - hop-by-hop headers stripped, `X-Forwarded-*` set
 - Configurable transport and server timeouts
 - Per-upstream attempt timeouts, with optional failover to a fallback upstream
+- Opt-in per-upstream token-bucket rate limiting
 - Graceful shutdown on `SIGTERM`
 - Non-blocking traffic mirroring
 - Prometheus metrics: requests, latency, mirroring outcomes, failed config reloads
@@ -45,6 +46,7 @@ Configuration is split into two files:
   - Network timeouts (transport & server)
   - Connection pool settings
   - Mirroring worker/queue configuration
+  - Rate limiting (opt-in)
   - Server port
 
 - **`routes.yaml`** - Routing configuration (hot-reloadable)
@@ -115,6 +117,7 @@ go test ./... && go test -race ./...
 ## Docs
 
 - [`docs/configuration.md`](docs/configuration.md) - every configuration key.
+- [`docs/rate-limiting.md`](docs/rate-limiting.md) - the limiter interface, algorithms, and validation.
 - [`docs/request-flow.md`](docs/request-flow.md) - the request lifecycle, timeouts, and failover.
 - [`docs/decisions`](docs/decisions) - architecture decision records.
 
