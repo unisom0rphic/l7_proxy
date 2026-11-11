@@ -646,3 +646,104 @@ func TestInfrastructureValidate_MaxBodySize(t *testing.T) {
 		}
 	})
 }
+
+func TestParseInfrastructureConfig_RateLimitFields(t *testing.T) {
+	text := `max-body-size: 1
+rate-limit:
+  enabled: true
+  algorithm: token_bucket
+  token-bucket:
+    refill-rate: 5.5
+    bucket-size: 7
+`
+	cfg, err := ParseInfrastructureConfig(writeTmpConfig(t, text))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !cfg.RateLimit.Enabled {
+		t.Error("rate-limit.enabled: want true")
+	}
+	if got := cfg.RateLimit.Algorithm; got != "token_bucket" {
+		t.Errorf("rate-limit.algorithm: want token_bucket, got %q", got)
+	}
+	if got := cfg.RateLimit.TokenBucket.RefillRate; got != 5.5 {
+		t.Errorf("rate-limit.token-bucket.refill-rate: want 5.5, got %v", got)
+	}
+	if got := cfg.RateLimit.TokenBucket.BucketSize; got != 7 {
+		t.Errorf("rate-limit.token-bucket.bucket-size: want 7, got %d", got)
+	}
+}
+
+func TestParseInfrastructureConfig_RateLimitRejectsUnknownFields(t *testing.T) {
+	tests := []string{
+		"rate-limit:\n  unknown: 1\n",
+		"rate-limit:\n  token-bucket:\n    refill_rate: 1\n",
+	}
+	for _, text := range tests {
+		if _, err := ParseInfrastructureConfig(writeTmpConfig(t, text)); err == nil {
+			t.Fatalf("expected an unknown-field error for %q", text)
+		}
+	}
+}
+
+func TestInfrastructureValidate_RateLimit(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "valid token bucket",
+			text: "rate-limit:\n  enabled: true\n  algorithm: token_bucket\n  token-bucket:\n    refill-rate: 10\n    bucket-size: 20\n",
+		},
+		{
+			name: "disabled without parameters",
+			text: "rate-limit:\n  enabled: false\n",
+		},
+		{
+			name: "defaults",
+			text: "rate-limit:\n  enabled: true\n",
+		},
+		{
+			name: "unknown algorithm",
+			text: "rate-limit:\n  algorithm: leaky_bucket\n",
+			want: `Unknown algorithm. Supported: "token_bucket"`,
+		},
+		{
+			name: "negative refill rate",
+			text: "rate-limit:\n  enabled: true\n  token-bucket:\n    refill-rate: -1\n",
+			want: "refill-rate must be >= 0",
+		},
+		{
+			name: "negative bucket size",
+			text: "rate-limit:\n  enabled: true\n  token-bucket:\n    bucket-size: -1\n",
+			want: "bucket-size must be >= 0",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			text := "max-body-size: 1\n" + tc.text
+			cfg, err := ParseInfrastructureConfig(writeTmpConfig(t, text))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			errs := cfg.Validate()
+			if tc.want == "" {
+				if len(errs) != 0 {
+					t.Fatalf("want no errors, got: %v", errs)
+				}
+				return
+			}
+
+			for _, e := range errs {
+				if strings.Contains(e.Error(), tc.want) {
+					return
+				}
+			}
+			t.Fatalf("no error contains %q; got: %v", tc.want, errs)
+		})
+	}
+}
