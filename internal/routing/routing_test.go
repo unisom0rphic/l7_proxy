@@ -898,3 +898,31 @@ func TestExpandRewrite_SingleDigitGroupsOnly(t *testing.T) {
 		t.Errorf("$10 = %q, want a0", got)
 	}
 }
+
+func TestDecideRoute_MultipleTargets(t *testing.T) {
+	cfg := testConfig(
+		[]config.Upstream{upstream("a", "http://a1:1111")},
+		[]config.Route{prefixRoute("/api", "a")},
+	)
+	cfg.NameToHosts = map[string][]*url.URL{
+		"a": {
+			{Scheme: "http", Host: "a1:1111"},
+			{Scheme: "http", Host: "a2:2222"},
+		},
+	}
+
+	r := newTestRouter(t, cfg)
+	d, err := r.DecideRoute(request(t, "GET", "/api/users", nil))
+	if err != nil {
+		t.Fatalf("DecideRoute: %v", err)
+	}
+	if len(d.Targets) != 2 {
+		t.Fatalf("Targets: want 2, got %d", len(d.Targets))
+	}
+	if d.Target.String() != d.Targets[0].String() {
+		t.Errorf("Target must be the first target: %q vs %q", d.Target, d.Targets[0])
+	}
+	if got := d.Targets[1].String(); got != "http://a2:2222/api/users" {
+		t.Errorf("second target: want %q, got %q", "http://a2:2222/api/users", got)
+	}
+}

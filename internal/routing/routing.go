@@ -37,6 +37,7 @@ type Decision struct {
 	Upstream string
 	Timeout  time.Duration
 	Target   *url.URL
+	Targets  []*url.URL
 	Mirrors  []mirroring.Target
 	Fallback *FailoverTarget
 }
@@ -301,18 +302,20 @@ func clientIPMatches(cidrs []string, remoteAddr string) bool {
 func finalize(idx *routeIndex, c candidate, r *http.Request) (Decision, error) {
 	cfg := idx.cfg
 
-	host, err := resolveHost(cfg, c.route.Upstream)
+	hosts, err := resolveHosts(cfg, c.route.Upstream)
 	if err != nil {
 		return Decision{}, err
 	}
 
-	var target *url.URL
-	if c.regexMatch != nil {
-		expanded := expandRegexRewrite(c.route.Rule.Rewrite, r.URL.Path, c.regexMatch)
-		target = buildTarget(host, expanded, "", r.URL.RawQuery)
-	} else {
+	targets := make([]*url.URL, 0, len(hosts))
+	for _, host := range hosts {
+		if c.regexMatch != nil {
+			expanded := expandRegexRewrite(c.route.Rule.Rewrite, r.URL.Path, c.regexMatch)
+			targets = append(targets, buildTarget(host, expanded, "", r.URL.RawQuery))
+			continue
+		}
 		rewrite := effectiveRewrite(c.route.Rule)
-		target = buildTarget(host, rewrite, c.pathSuffix, r.URL.RawQuery)
+		targets = append(targets, buildTarget(host, rewrite, c.pathSuffix, r.URL.RawQuery))
 	}
 
 	timeout := idx.upstreamTimeout(c.route.Upstream)
@@ -322,11 +325,12 @@ func finalize(idx *routeIndex, c candidate, r *http.Request) (Decision, error) {
 		return Decision{}, err
 	}
 
-	slog.Debug("decideRoute: route found", "host", host, "mirrors", len(mirrors))
+	slog.Debug("decideRoute: route found", "hosts", len(hosts), "mirrors", len(mirrors))
 	return Decision{
 		Upstream: c.route.Upstream,
 		Timeout:  timeout,
-		Target:   target,
+		Target:   targets[0],
+		Targets:  targets,
 		Mirrors:  mirrors,
 		Fallback: idx.failoverTarget(c.route.Upstream),
 	}, nil
@@ -367,17 +371,21 @@ func (idx *routeIndex) failoverTarget(name string) *FailoverTarget {
 	}
 }
 
-func resolveHost(cfg *config.Config, name string) (*url.URL, error) {
-	host, ok := cfg.NameToHost[name]
-	if !ok {
-		// If we reach this branch it means the config was incorrectly parsed,
-		// which means serious issue inside the parser that bypasses the tests.
-		// TODO: consider panicking when config validator ensures each name is mapped
-		// to the host.
-		slog.Error("decideRoute: host not found in upstreams", "upstream", name)
-		return nil, errors.New("URL host not mapped during config parse")
+func resolveHosts(cfg *config.Config, name string) ([]*url.URL, error) {
+	if hosts := cfg.NameToHosts[name]; len(hosts) > 0 {
+		return hosts, nil
 	}
-	return host, nil
+	// Hand-built configs (tests, ad-hoc callers) may only populate the
+	// single-host map.
+	if host, ok := cfg.NameToHost[name]; ok {
+		return []*url.URL{host}, nil
+	}
+	// If we reach this branch it means the config was incorrectly parsed,
+	// which means serious issue inside the parser that bypasses the tests.
+	// TODO: consider panicking when config validator ensures each name is mapped
+	// to the host.
+	slog.Error("decideRoute: host not found in upstreams", "upstream", name)
+	return nil, errors.New("URL host not mapped during config parse")
 }
 
 func resolveMirrors(cfg *config.Config, mirrors []config.Mirror) ([]mirroring.Target, error) {
