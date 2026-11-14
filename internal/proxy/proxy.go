@@ -16,6 +16,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/unisom0rphic/l7proxy/internal/config"
+	loadbalancing "github.com/unisom0rphic/l7proxy/internal/load_balancing"
 	"github.com/unisom0rphic/l7proxy/internal/metrics"
 	"github.com/unisom0rphic/l7proxy/internal/mirroring"
 	"github.com/unisom0rphic/l7proxy/internal/ratelimit"
@@ -32,6 +33,7 @@ type L7Proxy struct {
 	infraConfig   *config.InfrastructureConfig
 	gate          Gate
 	limiter       Limiter
+	balancer      Balancer
 }
 
 // Gate is the seam for the future circuit breaker. Allow reports whether an
@@ -62,6 +64,22 @@ func (allowAllGate) Record(string, error) {}
 type unlimitedLimiter struct{}
 
 func (unlimitedLimiter) Allow(string) bool { return true }
+
+// Balancer picks one of an upstream's backends for a request. The round-robin
+// implementation lives in internal/load_balancing; the default keeps the first
+// target, which is the single-backend behavior.
+type Balancer interface {
+	Pick(upstream string, targets []*url.URL) *url.URL
+}
+
+type firstTargetBalancer struct{}
+
+func (firstTargetBalancer) Pick(_ string, targets []*url.URL) *url.URL {
+	if len(targets) == 0 {
+		return nil
+	}
+	return targets[0]
+}
 
 type responseWriter struct {
 	http.ResponseWriter
@@ -263,7 +281,14 @@ func (t *attemptingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		return t.base.RoundTrip(req)
 	}
 
-	resp, err := t.attempt(req, decision.Upstream, decision.Target, decision.Timeout)
+	target := decision.Target
+	if t.p.balancer != nil {
+		if picked := t.p.balancer.Pick(decision.Upstream, decision.Targets); picked != nil {
+			target = picked
+		}
+	}
+
+	resp, err := t.attempt(req, decision.Upstream, target, decision.Timeout)
 	if err == nil {
 		return resp, nil
 	}
@@ -387,6 +412,15 @@ func New(r *routing.Router, infraConfig *config.InfrastructureConfig, m *metrics
 		limiter = rl
 	}
 
+	var balancer Balancer = firstTargetBalancer{}
+	if infraConfig.LoadBalancing.Enabled {
+		lb, err := loadbalancing.New(infraConfig.LoadBalancing)
+		if err != nil {
+			panic(fmt.Sprintf("load balancer: %v", err))
+		}
+		balancer = lb
+	}
+
 	proxy := &L7Proxy{
 		router:        r,
 		metrics:       m,
@@ -394,6 +428,7 @@ func New(r *routing.Router, infraConfig *config.InfrastructureConfig, m *metrics
 		infraConfig:   infraConfig,
 		gate:          allowAllGate{},
 		limiter:       limiter,
+		balancer:      balancer,
 	}
 
 	proxy.rp = &httputil.ReverseProxy{
