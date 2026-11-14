@@ -835,3 +835,74 @@ func TestInfrastructureValidate_RateLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestParseInfrastructureConfig_LoadBalancingFields(t *testing.T) {
+	text := `max-body-size: 1
+load-balancing:
+  enabled: true
+  algorithm: round_robin
+`
+	cfg, err := ParseInfrastructureConfig(writeTmpConfig(t, text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.LoadBalancing.Enabled {
+		t.Error("load-balancing.enabled: want true")
+	}
+	if got := cfg.LoadBalancing.Algorithm; got != "round_robin" {
+		t.Errorf("load-balancing.algorithm: want round_robin, got %q", got)
+	}
+}
+
+func TestParseInfrastructureConfig_LoadBalancingRejectsUnknownFields(t *testing.T) {
+	if _, err := ParseInfrastructureConfig(writeTmpConfig(t,
+		"load-balancing:\n  round_robin: true\n")); err == nil {
+		t.Fatal("expected an unknown-field error for round_robin")
+	}
+}
+
+func TestInfrastructureValidate_LoadBalancing(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "defaults",
+			text: "load-balancing:\n  enabled: true\n",
+		},
+		{
+			name: "explicit round robin",
+			text: "load-balancing:\n  enabled: true\n  algorithm: round_robin\n",
+		},
+		{
+			name: "unknown algorithm",
+			text: "load-balancing:\n  algorithm: least_conn\n",
+			want: `Unknown algorithm. Supported: "round_robin"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			text := "max-body-size: 1\n" + tc.text
+			cfg, err := ParseInfrastructureConfig(writeTmpConfig(t, text))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			errs := cfg.Validate()
+			if tc.want == "" {
+				if len(errs) != 0 {
+					t.Fatalf("want no errors, got: %v", errs)
+				}
+				return
+			}
+			for _, e := range errs {
+				if strings.Contains(e.Error(), tc.want) {
+					return
+				}
+			}
+			t.Fatalf("no error contains %q; got: %v", tc.want, errs)
+		})
+	}
+}
