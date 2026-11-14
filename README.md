@@ -118,6 +118,7 @@ go test ./... && go test -race ./...
 
 - [`docs/configuration.md`](docs/configuration.md) - every configuration key.
 - [`docs/rate-limiting.md`](docs/rate-limiting.md) - the limiter interface, algorithms, and validation.
+- [`docs/load-balancing.md`](docs/load-balancing.md) - the balancer interface, round-robin rotation, and multi-backend upstreams.
 - [`docs/request-flow.md`](docs/request-flow.md) - the request lifecycle, timeouts, and failover.
 - [`docs/decisions`](docs/decisions) - architecture decision records.
 

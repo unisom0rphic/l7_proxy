@@ -9,7 +9,8 @@ retried against a fallback upstream.
    before doing any routing work.
 2. **Route** - `DecideRoute` picks a route (exact path, then longest prefix,
    then the first matching regex) and resolves it into a `Decision`: the
-   upstream name, the outbound target URL, the per-attempt timeout, the mirror
+   upstream name, the upstream's backend targets and the outbound target URL,
+   the per-attempt timeout, the mirror
    targets, and the optional fallback.
 3. **Bound** - `ServeHTTP` puts the request in a context carrying the server
    context timeout (`net-timeouts-s.server.context`). This deadline is the
@@ -17,8 +18,9 @@ retried against a fallback upstream.
 4. **Rewrite** - the body is buffered so it can be replayed, `X-Forwarded-*` is
    set, and the outbound URL is swapped to the target while the path and query
    are preserved.
-5. **Attempt** - the attempting transport sends the request to the primary
-   upstream under that upstream's `timeout-ms`.
+5. **Attempt** - the attempting transport picks one of the upstream's backends
+   (round-robin when load balancing is enabled, the first backend otherwise)
+   and sends the request under that upstream's `timeout-ms`.
 6. **Failover** - if the attempt fails and the request is eligible, the same
    request is replayed once against the fallback upstream.
 
@@ -49,17 +51,21 @@ A fallback is tried only when all of the following hold:
 
 The fallback is followed for exactly one hop: if it also fails, the request
 fails. The request is not mirrored to the fallback, and a fallback that names
-another upstream does not chain further.
+another upstream does not chain further. The fallback attempt goes to the
+fallback's own configured host: backend selection applies to the routed
+upstream only.
 
 ## Policy seams
 
-Two interfaces in `internal/proxy` mark where the future circuit breaker and
-rate limiter plug in:
+The policy seams in `internal/proxy`:
 
 - `Gate` - `Allow(upstream)` before an attempt and `Record(upstream, err)`
   after it. A closed gate sends the request to the fallback, or answers 503 when
   nothing else can serve it.
 - `Limiter` - `Allow(upstream)` before an attempt.
+- `Balancer` - `Pick(upstream, targets)` chooses the backend for an attempt.
+  The round-robin implementation lives in `internal/load_balancing`; the
+  default keeps the first target.
 
 The defaults admit every request, so the proxy behaves today as if no policy
 layer exists. Real implementations belong in `internal/policy`.

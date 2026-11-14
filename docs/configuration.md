@@ -22,6 +22,7 @@ error, so a typo never silently turns into a zero value.
 | `connection-pool` | object | no | HTTP transport connection pool settings. |
 | `mirroring` | object | no | Mirroring worker and queue configuration. |
 | `rate-limit` | object | no | Per-upstream rate limiting. Disabled by default. See [Rate Limiting](rate-limiting.md). |
+| `load-balancing` | object | no | Multi-backend balancing across an upstream's hosts. Disabled by default. See [Load Balancing](load-balancing.md). |
 | `port` | string | no | Server listen port. The example config sets `"8080"`. |
 
 ### `net-timeouts-s`
@@ -73,6 +74,18 @@ negative values and non-finite refill rates are rejected. See
 [Rate Limiting](rate-limiting.md) for the algorithm interface and validation
 rules.
 
+### `load-balancing`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Balance each attempt across the routed upstream's backends. |
+| `algorithm` | string | `round_robin` | Algorithm name. Currently only `round_robin` is supported. |
+
+The algorithm block has no parameters today. An unknown algorithm is rejected
+at startup even when `enabled` is `false`. See
+[Load Balancing](load-balancing.md) for the algorithm interface and rotation
+rules.
+
 ---
 
 ## Routing Config (`routes.yaml`)
@@ -89,7 +102,8 @@ rules.
 | Key | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes | Unique upstream name. |
-| `host` | string | yes | Base URL, must include scheme and port (`http://host:3001`). No path, query, or fragment. |
+| `host` | string | one of | Base URL, must include scheme and port (`http://host:3001`). No path, query, or fragment. Mutually exclusive with `hosts`. |
+| `hosts` | list | one of | Backend URLs for a multi-backend upstream, same format as `host`. Entries must be unique. Exactly one of `host`/`hosts` must be set. |
 | `timeout-ms` | int (ms) | no | Per-attempt timeout for this upstream. `0` (or unset) inherits the server context timeout. |
 | `fallback` | string | no | Upstream to try once when this one cannot be reached. Must exist in `upstreams` and must not name the upstream itself. |
 
@@ -113,6 +127,14 @@ timeout firing. Failover is narrow by design:
   one hop only.
 
 See [`request-flow.md`](./request-flow.md) for the full lifecycle.
+
+#### Multiple backends
+
+An upstream may declare several `hosts`. Each attempt against the upstream is
+sent to one of them, chosen by the balancing algorithm - round-robin when load
+balancing is enabled, the first entry otherwise. Failover is unaffected: the
+`fallback` upstream is reached at its own configured host and is never
+balanced. See [Load Balancing](load-balancing.md).
 
 ### `routes[]`
 

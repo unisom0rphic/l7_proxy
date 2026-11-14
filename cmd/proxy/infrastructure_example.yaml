@@ -25,5 +25,9 @@ rate-limit:
     refill-rate: 10
     bucket-size: 20
 
+load-balancing:
+  enabled: false
+  algorithm: round_robin
+
 port: "8080"
 max-body-size: 4096  # bytes
