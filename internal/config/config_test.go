@@ -223,6 +223,59 @@ func TestValidate_AcceptsGoodHosts(t *testing.T) {
 	}
 }
 
+func TestValidate_AcceptsMultipleHosts(t *testing.T) {
+	cfg := validConfig()
+	cfg.Upstreams[0].Host = ""
+	cfg.Upstreams[0].Hosts = []string{
+		"http://srv-a1:1111",
+		"https://srv-a2:2222",
+	}
+	wantOK(t, cfg)
+}
+
+func TestValidate_RejectsBadHosts(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Upstream)
+		want   string
+	}{
+		{
+			"host and hosts together",
+			func(u *Upstream) { u.Hosts = []string{"http://srv-a2:2222"} },
+			"exactly one of host or hosts",
+		},
+		{
+			"no host",
+			func(u *Upstream) { u.Host = "" },
+			"host or hosts is required",
+		},
+		{
+			"invalid hosts entry",
+			func(u *Upstream) {
+				u.Host = ""
+				u.Hosts = []string{"http://srv-a1:1111", "ftp://srv-a2:2222"}
+			},
+			"scheme must be http or https",
+		},
+		{
+			"duplicate hosts entry",
+			func(u *Upstream) {
+				u.Host = ""
+				u.Hosts = []string{"http://srv-a1:1111", "http://srv-a1:1111"}
+			},
+			"duplicate host",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			tc.mutate(&cfg.Upstreams[0])
+			wantErrContains(t, cfg, tc.want)
+		})
+	}
+}
+
 func TestValidate_RejectsBadRule(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -476,6 +529,41 @@ routes:
 	}
 	if rt.Upstream != "a" {
 		t.Errorf("route.upstream: want a, got %q", rt.Upstream)
+	}
+}
+
+func TestParseConfig_HostsField(t *testing.T) {
+	text := `upstreams:
+  - name: a
+    hosts:
+      - http://srv-a1:1111
+      - http://srv-a2:2222
+    timeout-ms: 300
+routes:
+  - rules:
+      path-prefix: /v1
+    upstream: a
+`
+	cfg, err := ParseConfig(writeTmpConfig(t, text))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := len(cfg.Upstreams[0].Hosts); got != 2 {
+		t.Fatalf("hosts: want 2, got %d", got)
+	}
+	hosts := cfg.NameToHosts["a"]
+	if len(hosts) != 2 {
+		t.Fatalf("mapped hosts: want 2, got %d", len(hosts))
+	}
+	if got := hosts[0].String(); got != "http://srv-a1:1111" {
+		t.Errorf("first mapped host: want %q, got %q", "http://srv-a1:1111", got)
+	}
+	if got := hosts[1].String(); got != "http://srv-a2:2222" {
+		t.Errorf("second mapped host: want %q, got %q", "http://srv-a2:2222", got)
+	}
+	if got := cfg.NameToHost["a"].String(); got != "http://srv-a1:1111" {
+		t.Errorf("primary host: want %q, got %q", "http://srv-a1:1111", got)
 	}
 }
 

@@ -30,10 +30,23 @@ type ServerTimeouts struct {
 }
 
 type Upstream struct {
-	Name     string `yaml:"name"`
-	Host     string `yaml:"host"`
-	Timeout  int    `yaml:"timeout-ms"`
-	Fallback string `yaml:"fallback,omitempty"`
+	Name     string   `yaml:"name"`
+	Host     string   `yaml:"host"`
+	Hosts    []string `yaml:"hosts,omitempty"`
+	Timeout  int      `yaml:"timeout-ms"`
+	Fallback string   `yaml:"fallback,omitempty"`
+}
+
+// backendHosts returns the configured backend URLs. Hosts is the multi-backend
+// form; Host is a single-backend shorthand.
+func (u Upstream) backendHosts() []string {
+	if len(u.Hosts) > 0 {
+		return u.Hosts
+	}
+	if u.Host == "" {
+		return nil
+	}
+	return []string{u.Host}
 }
 
 type HeaderOp string
@@ -115,9 +128,10 @@ type InfrastructureConfig struct {
 }
 
 type Config struct {
-	Upstreams  []Upstream          `yaml:"upstreams"`
-	Routes     []Route             `yaml:"routes"`
-	NameToHost map[string]*url.URL `yaml:"-"`
+	Upstreams   []Upstream            `yaml:"upstreams"`
+	Routes      []Route               `yaml:"routes"`
+	NameToHost  map[string]*url.URL   `yaml:"-"`
+	NameToHosts map[string][]*url.URL `yaml:"-"`
 }
 
 var httpMethods = map[string]struct{}{
@@ -127,21 +141,32 @@ var httpMethods = map[string]struct{}{
 
 // Maps upstream names to their hosts (e.g users-prod -> http://users-prod:3001)
 func (cfg *Config) mapNamesToHosts() error {
-	nameToHost := make(map[string]*url.URL)
+	nameToHost := make(map[string]*url.URL, len(cfg.Upstreams))
+	nameToHosts := make(map[string][]*url.URL, len(cfg.Upstreams))
 	for _, upstream := range cfg.Upstreams {
 		name := upstream.Name
-		host := upstream.Host
+		hosts := upstream.backendHosts()
+		if len(hosts) == 0 {
+			return fmt.Errorf("upstream %s has no hosts", name)
+		}
 
-		u, err := url.Parse(host)
-		if err != nil {
-			return fmt.Errorf("error mapping upstream %s to host %s, %w", name, host, err)
+		urls := make([]*url.URL, 0, len(hosts))
+		for _, host := range hosts {
+			u, err := url.Parse(host)
+			if err != nil {
+				return fmt.Errorf("error mapping upstream %s to host %s, %w", name, host, err)
+			}
+			if u.Scheme != "http" && u.Scheme != "https" {
+				return fmt.Errorf("error parsing config url for %s: incorrect scheme: %s", name, host)
+			}
+			urls = append(urls, u)
 		}
-		if u.Scheme != "http" && u.Scheme != "https" {
-			return fmt.Errorf("error parsing config url for %s: incorrect scheme: %s", name, host)
-		}
-		nameToHost[name] = u
+
+		nameToHost[name] = urls[0]
+		nameToHosts[name] = urls
 	}
 	cfg.NameToHost = nameToHost
+	cfg.NameToHosts = nameToHosts
 
 	return nil
 }
@@ -178,8 +203,15 @@ func validateUpstreams(upstreams []Upstream) []error {
 			}
 		}
 
-		if err := validateUpstreamHost(u.Host); err != nil {
-			errs = append(errs, fmt.Errorf("upstreams[%d] (%s): %w", i, u.Name, err))
+		switch {
+		case u.Host != "" && len(u.Hosts) > 0:
+			errs = append(errs, fmt.Errorf(
+				"upstreams[%d] (%s): exactly one of host or hosts must be set", i, u.Name))
+		case len(u.backendHosts()) == 0:
+			errs = append(errs, fmt.Errorf(
+				"upstreams[%d] (%s): host or hosts is required", i, u.Name))
+		default:
+			errs = append(errs, validateUpstreamHosts(i, u)...)
 		}
 
 		if u.Timeout < 0 {
@@ -204,6 +236,25 @@ func validateUpstreams(upstreams []Upstream) []error {
 		}
 	}
 
+	return errs
+}
+
+func validateUpstreamHosts(i int, u Upstream) []error {
+	var errs []error
+	seen := make(map[string]struct{}, len(u.Hosts))
+	for j, host := range u.backendHosts() {
+		if _, dup := seen[host]; dup {
+			errs = append(errs, fmt.Errorf(
+				"upstreams[%d] (%s): duplicate host %q", i, u.Name, host))
+			continue
+		}
+		seen[host] = struct{}{}
+
+		if err := validateUpstreamHost(host); err != nil {
+			errs = append(errs, fmt.Errorf(
+				"upstreams[%d] (%s): hosts[%d]: %w", i, u.Name, j, err))
+		}
+	}
 	return errs
 }
 
